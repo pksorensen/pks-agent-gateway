@@ -1,3 +1,5 @@
-# built binary (anchored so it doesn't match the src/gateway/ source dir)
+# built binaries (anchored so they don't match source dirs)
 /src/gateway/gateway
+/src/cli/cli
 *.log
+data/

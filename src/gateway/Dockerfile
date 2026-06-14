@@ -10,5 +10,8 @@ WORKDIR /app
 COPY --from=builder /out/gateway /app/gateway
 ENV PORT=8080
 ENV UPSTREAM=https://api.anthropic.com
+ENV USER_DATA_DIR=/data
+ENV GATEWAY_OWNER=default
+VOLUME ["/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/gateway"]
