@@ -91,3 +91,73 @@ jobs:
             } catch (e) {
               core.warning(`Could not set package visibility automatically (${e.message}).`);
             }
+
+  # Cross-compile gateway-cli for all platforms and attach to the GitHub Release.
+  build-cli:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/cli/go.mod
+          cache-dependency-path: src/cli/go.sum
+
+      - name: Build gateway-cli
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          cd src/cli
+          go build -ldflags="-s -w -X main.version=${{ env.VERSION }}" \
+            -o ../../dist/gateway-cli_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext || '' }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-cli_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dist/gateway-cli_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext || '' }}
+
+  # Collect CLI binaries and attach them to the release created by release-please.
+  release-assets:
+    needs: [release-please, build-cli]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum gateway-cli_* > gateway-cli_${{ env.VERSION }}_checksums.txt
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: |
+            dist/gateway-cli_*
