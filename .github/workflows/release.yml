@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write   # required to push the release image to ghcr.io
+  id-token: write   # required so the coolify-deploy runner can fetch a GH OIDC token
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Build once with buildx, push the same digest to registry.agentics.dk
+  # (canonical) and GHCR (public mirror). One build → identical vX.Y.Z tag
+  # everywhere. Runs on self-hosted runner so the registry-login action can
+  # reach the pks credential socket.
+  build-push:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: [self-hosted, devcontainer-runner]
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry.agentics.dk
+        uses: pksorensen/pks-cli/.github/actions/registry-login@main
+        with:
+          registry: registry.agentics.dk
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/gateway/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            registry.agentics.dk/agentics/pks-agent-gateway:${{ env.VERSION }}
+            registry.agentics.dk/agentics/pks-agent-gateway:latest
+            ghcr.io/${{ github.repository }}:v${{ env.VERSION }}
+            ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Log out of registry.agentics.dk
+        if: always()
+        run: docker logout registry.agentics.dk
+
+      - name: Make GHCR package public
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              await github.request('PATCH /user/packages/container/pks-agent-gateway/visibility', {
+                visibility: 'public'
+              });
+              core.info('Package visibility set to public.');
+            } catch (e) {
+              core.warning(`Could not set package visibility automatically (${e.message}).`);
+            }
