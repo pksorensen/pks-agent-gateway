@@ -32,7 +32,8 @@ type Member struct {
 //	{dataDir}/owners/{owner}/projects/{projectId}/members.json
 //	{dataDir}/owners/{owner}/projects/{projectId}/otel/{YYYY-MM-DD}.jsonl
 type Store struct {
-	base string // dataDir/owners/owner/projects
+	base          string // dataDir/owners/owner/projects
+	testbenchBase string // dataDir/owners/owner/testbench (sim scenarios + cassettes)
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex // per-file append mutex
@@ -44,8 +45,9 @@ func NewStore(dataDir, owner string) *Store {
 		dataDir = "./data"
 	}
 	return &Store{
-		base:  filepath.Join(dataDir, "owners", owner, "projects"),
-		locks: make(map[string]*sync.Mutex),
+		base:          filepath.Join(dataDir, "owners", owner, "projects"),
+		testbenchBase: filepath.Join(dataDir, "owners", owner, "testbench"),
+		locks:         make(map[string]*sync.Mutex),
 	}
 }
 

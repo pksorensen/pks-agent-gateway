@@ -19,8 +19,13 @@ func main() {
 	owner := env("GATEWAY_OWNER", "default")
 	gatewayToken := os.Getenv("GATEWAY_TOKEN")
 	oidcIssuer := os.Getenv("OIDC_ISSUER")
+	simEnabled := os.Getenv("GATEWAY_SIM_ENABLED") == "1"
 
 	store := NewStore(dataDir, owner)
+	sim := newSimulator(store, simEnabled)
+	if simEnabled {
+		log.Println("SIMULATOR ENABLED — sim-* API keys are served locally, never proxied upstream")
+	}
 
 	var auth *OIDCMiddleware
 	if oidcIssuer != "" {
@@ -54,12 +59,20 @@ func main() {
 	mux.Handle("GET /api/projects/{id}", auth.Require()(api))
 	mux.Handle("GET /api/projects/{id}/stats", auth.Require()(api))
 
-	// Proxy catch-all — forwards everything else to the upstream Anthropic API.
+	// Test-bench management API — registered unconditionally (it answers 403
+	// when the sim is disabled) so a typo'd testbench path can never fall
+	// through to the proxy catch-all carrying a Bearer token.
+	mux.Handle("/api/testbench/", auth.Require(RoleGatewayAdmin)(newTestbenchHandler(store, sim)))
+
+	// Proxy catch-all — forwards everything else to the upstream Anthropic
+	// API. The sim gate intercepts sim-keyed requests (always — even when
+	// disabled they get a local 403, never the proxy) and handles cassette
+	// recording for passthrough traffic.
 	upstreamURL, err := url.Parse(upstream)
 	if err != nil {
 		log.Fatalf("invalid UPSTREAM %q: %v", upstream, err)
 	}
-	mux.Handle("/", newProxy(upstreamURL, gatewayToken))
+	mux.Handle("/", sim.Gate(newProxy(upstreamURL, gatewayToken)))
 
 	srv := &http.Server{
 		Addr:    ":" + port,
