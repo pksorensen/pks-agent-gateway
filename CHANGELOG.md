@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/pksorensen/pks-agent-gateway/compare/pks-agent-gateway-v1.0.0...pks-agent-gateway-v1.1.0) (2026-07-17)
+
+
+### Features
+
+* **gateway:** LLM simulator + testbench API for deterministic e2e ([1c3d40e](https://github.com/pksorensen/pks-agent-gateway/commit/1c3d40e4cf7bd782d4e6f60fe538c1bb1dda7ff8))
+
 ## 1.0.0 (2026-06-14)
 
 
