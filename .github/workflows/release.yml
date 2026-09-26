@@ -8,7 +8,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  packages: write   # required to push the release image to ghcr.io
   id-token: write   # required so the coolify-deploy runner can fetch a GH OIDC token
 
 jobs:
@@ -26,10 +25,9 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Build once with buildx, push the same digest to registry.agentics.dk
-  # (canonical) and GHCR (public mirror). One build → identical vX.Y.Z tag
-  # everywhere. Runs on self-hosted runner so the registry-login action can
-  # reach the pks credential socket.
+  # Build once with buildx and publish to the canonical Agentics registry.
+  # Runs on the self-hosted runner so the registry-login action can reach the
+  # pks credential socket.
   build-push:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
@@ -50,13 +48,6 @@ jobs:
         with:
           registry: registry.agentics.dk
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -67,30 +58,12 @@ jobs:
           tags: |
             registry.agentics.dk/agentics/pks-agent-gateway:${{ env.VERSION }}
             registry.agentics.dk/agentics/pks-agent-gateway:latest
-            ghcr.io/${{ github.repository }}:v${{ env.VERSION }}
-            ghcr.io/${{ github.repository }}:${{ env.VERSION }}
-            ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Log out of registry.agentics.dk
         if: always()
         run: docker logout registry.agentics.dk
-
-      - name: Make GHCR package public
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            try {
-              await github.request('PATCH /user/packages/container/pks-agent-gateway/visibility', {
-                visibility: 'public'
-              });
-              core.info('Package visibility set to public.');
-            } catch (e) {
-              core.warning(`Could not set package visibility automatically (${e.message}).`);
-            }
 
   # Cross-compile gateway-cli for all platforms and attach to the GitHub Release.
   build-cli:
