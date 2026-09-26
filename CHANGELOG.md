@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/pksorensen/pks-agent-gateway/compare/pks-agent-gateway-v1.1.0...pks-agent-gateway-v1.2.0) (2026-09-26)
+
+
+### Features
+
+* **gateway:** add realtime speech capability bridge ([#4](https://github.com/pksorensen/pks-agent-gateway/issues/4)) ([0dadc59](https://github.com/pksorensen/pks-agent-gateway/commit/0dadc596bde42ffcc7ed2ba620695435d82ad65b))
+* **gateway:** APIM-style subscription lane, multi-tenant owners, runner connectors ([e82573d](https://github.com/pksorensen/pks-agent-gateway/commit/e82573dcbc8368a07d8df6b5ce3f6083e840e5e8))
+
 ## [1.1.0](https://github.com/pksorensen/pks-agent-gateway/compare/pks-agent-gateway-v1.0.0...pks-agent-gateway-v1.1.0) (2026-07-17)
 
 
