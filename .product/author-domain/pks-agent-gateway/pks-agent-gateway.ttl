@@ -1,0 +1,1118 @@
+@prefix pf: <https://productframework.org/ns#> .
+@prefix d: <https://productframework.org/product/pks-agent-gateway#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+d:catalog a pf:BoundedContext ;
+  rdfs:label "Catalog" ;
+  pf:purpose "What the gateway publishes: upstream APIs and their operations, MCP servers and their tools, and the bundles that group them (PRD F2-F8)." .
+
+d:access a pf:BoundedContext ;
+  rdfs:label "Access" ;
+  pf:purpose "Who may call what: principals (human or service) and their subscriptions to bundles, each carrying a primary and secondary key (PRD F10-F12)." .
+
+d:credentials a pf:BoundedContext ;
+  rdfs:label "Credentials" ;
+  pf:purpose "Upstream credentials the gateway injects on the caller's behalf; values never leave the gateway (PRD F13-F14, ADR 0002)." .
+
+d:governance a pf:BoundedContext ;
+  rdfs:label "Governance" ;
+  pf:purpose "Typed policy evaluated on every data-plane request, the request decision itself, and usage attributed to the authenticated subscription (PRD F15-F17)." .
+
+d:Api a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "An upstream HTTP service published under a public path prefix; kind http or llm; forwards only its declared operations." ;
+  pf:inContext d:catalog ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "api id (unique per owner)" .
+
+d:Operation a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "One method + path template of an Api, imported from OpenAPI or declared by hand; the unit an MCP tool maps to." ;
+  pf:inContext d:catalog ;
+  pf:identity "api id + operation id" .
+
+d:McpServer a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "An MCP tool server exposed at /mcp/{server}: either generated from an Api's operations or a passthrough to a remote Streamable-HTTP server with an optional tool allow-list." ;
+  pf:inContext d:catalog ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "server name (the /mcp/{server} segment)" .
+
+d:Tool a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "One MCP tool of an McpServer; name, description and inputSchema default from its Operation and may be overridden." ;
+  pf:inContext d:catalog ;
+  pf:identity "server name + tool name" .
+
+d:Bundle a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "A named group of Apis and McpServers that principals subscribe to (APIM's Product; label open for renaming). State published or hidden." ;
+  pf:inContext d:catalog ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "bundle id" .
+
+d:Principal a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "Who a subscription belongs to: a human (Keycloak OIDC sub) or a non-human service principal that authenticates to the data plane only through a subscription key." ;
+  pf:inContext d:access ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "OIDC sub (human) or service-principal id" .
+
+d:Subscription a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "A principal's access to one bundle: a named container for two live keys (primary, secondary) with state active, suspended, cancelled or expired (label open for renaming)." ;
+  pf:inContext d:access ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "subscription id" .
+
+d:Credential a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "An upstream secret the gateway resolves (env, sealed, vault or entra) and injects (header, query or bearer); the management plane never returns its value." ;
+  pf:inContext d:credentials ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "credential id" .
+
+d:Policy a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "A typed, declarative rule (set-header, strip-header, rate-limit, token-limit, ip-allow) at global, bundle, api or subscription scope; no expression language." ;
+  pf:inContext d:governance ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "policy id" .
+
+d:GatewayRequest a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "One data-plane call (HTTP route or MCP tools/call) presenting a subscription key; decided as authorized or rejected before anything reaches an upstream." ;
+  pf:inContext d:governance ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "request id" .
+
+d:UsageRecord a pf:Entity ;
+  rdfs:label "" ;
+  pf:definition "The attributed record of one data-plane call: subscription, principal, bundle, api or tool, status, latency, bytes, and for llm apis input/output tokens and model." ;
+  pf:inContext d:governance ;
+  pf:isAggregateRoot "true" ;
+  pf:identity "request id" .
+
+d:SubscriptionKey a pf:ValueObject ;
+  rdfs:label "" ;
+  pf:inContext d:access ;
+  pf:definition "One of a subscription's two keys (slot primary or secondary); shown to the caller exactly once, stored only as a sha256 hash, compared in constant time." .
+
+d:InjectionSpec a pf:ValueObject ;
+  rdfs:label "" ;
+  pf:inContext d:credentials ;
+  pf:definition "Where a resolved credential is placed on the upstream request: a header name, a query parameter, or a bearer token." .
+
+d:PolicyScope a pf:ValueObject ;
+  rdfs:label "" ;
+  pf:inContext d:governance ;
+  pf:definition "The level a policy attaches to (global, bundle, api, subscription) plus the target id; evaluation order is fixed global -> bundle -> api -> subscription." .
+
+d:ConnectionSnippet a pf:ValueObject ;
+  rdfs:label "" ;
+  pf:inContext d:access ;
+  pf:definition "What a subscriber needs to connect: base URL, key header, and a ready-to-merge .mcp.json fragment." .
+
+d:api-has-operations a pf:Relation ;
+  pf:from d:Api ;
+  pf:to d:Operation ;
+  pf:cardinality "1..0..*" ;
+  pf:rationale "Only declared operations are forwarded (FR-3), so an Api owns its operation set." .
+
+d:mcp-has-tools a pf:Relation ;
+  pf:from d:McpServer ;
+  pf:to d:Tool ;
+  pf:cardinality "1..0..*" ;
+  pf:rationale "tools/list and tools/call are answered from the server's tool set (FR-4, FR-5)." .
+
+d:tool-maps-operation a pf:Relation ;
+  pf:from d:Tool ;
+  pf:to d:Operation ;
+  pf:cardinality "0..*..0..1" ;
+  pf:rationale "A generated tool is one operation (FR-4); a remote-server tool maps to none." .
+
+d:mcp-generated-from-api a pf:Relation ;
+  pf:from d:McpServer ;
+  pf:to d:Api ;
+  pf:cardinality "0..*..0..1" ;
+  pf:rationale "A from-api server is created by picking operations of one Api (FR-4)." .
+
+d:bundle-contains-api a pf:Relation ;
+  pf:from d:Bundle ;
+  pf:to d:Api ;
+  pf:cardinality "0..*..0..*" ;
+  pf:rationale "Bundles group Apis for subscription (FR-7)." .
+
+d:bundle-contains-mcp a pf:Relation ;
+  pf:from d:Bundle ;
+  pf:to d:McpServer ;
+  pf:cardinality "0..*..0..*" ;
+  pf:rationale "Bundles group MCP servers; tools/list filters by bundle coverage (FR-6, FR-7)." .
+
+d:subscription-to-bundle a pf:Relation ;
+  pf:from d:Subscription ;
+  pf:to d:Bundle ;
+  pf:cardinality "0..*..1" ;
+  pf:rationale "v1 supports bundle scope only (F11)." .
+
+d:subscription-of-principal a pf:Relation ;
+  pf:from d:Subscription ;
+  pf:to d:Principal ;
+  pf:cardinality "0..*..1" ;
+  pf:rationale "Every subscription belongs to exactly one principal, human or service (FR-8)." .
+
+d:subscription-keys a pf:Relation ;
+  pf:from d:Subscription ;
+  pf:to d:SubscriptionKey ;
+  pf:cardinality "1..2" ;
+  pf:rationale "Two live keys so rotation is not a flag day (F10, FR-10)." .
+
+d:api-uses-credential a pf:Relation ;
+  pf:from d:Api ;
+  pf:to d:Credential ;
+  pf:cardinality "0..*..0..1" ;
+  pf:rationale "An Api references at most one credential to inject upstream (FR-1, FR-13)." .
+
+d:credential-injects a pf:Relation ;
+  pf:from d:Credential ;
+  pf:to d:InjectionSpec ;
+  pf:cardinality "1..1" ;
+  pf:rationale "Every credential declares exactly one injection (FR-13)." .
+
+d:policy-scoped a pf:Relation ;
+  pf:from d:Policy ;
+  pf:to d:PolicyScope ;
+  pf:cardinality "1..1" ;
+  pf:rationale "A policy attaches to exactly one scope (FR-16)." .
+
+d:usage-for-subscription a pf:Relation ;
+  pf:from d:UsageRecord ;
+  pf:to d:Subscription ;
+  pf:cardinality "0..*..1" ;
+  pf:rationale "Usage is attributed by the authenticated subscription, never self-declared (F17, FR-17)." .
+
+d:request-presents-subscription a pf:Relation ;
+  pf:from d:GatewayRequest ;
+  pf:to d:Subscription ;
+  pf:cardinality "0..*..0..1" ;
+  pf:rationale "A request is resolved to at most one subscription by its presented key (FR-11)." .
+
+d:INV-API-UNIQUE a pf:Invariant ;
+  pf:statement "An api id is registered at most once per owner." ;
+  pf:inContext d:catalog ;
+  pf:appliesTo d:Api .
+
+d:INV-API-KIND a pf:Invariant ;
+  pf:statement "An api's kind is a member of ApiKind (http | llm)." ;
+  pf:inContext d:catalog ;
+  pf:appliesTo d:Api .
+
+d:INV-API-LIVE a pf:Invariant ;
+  pf:statement "Only a registered, not-removed api can be updated, removed, imported into or given operations." ;
+  pf:inContext d:catalog ;
+  pf:appliesTo d:Api .
+
+d:INV-MCP-UNIQUE a pf:Invariant ;
+  pf:statement "An MCP server name is used at most once; a removed server cannot be changed." ;
+  pf:inContext d:catalog ;
+  pf:appliesTo d:McpServer .
+
+d:INV-MCP-SOURCE a pf:Invariant ;
+  pf:statement "A from-api server names an existing api and at least one of its operations; a remote server names a Streamable-HTTP URL (SSE is not accepted)." ;
+  pf:inContext d:catalog ;
+  pf:appliesTo d:McpServer .
+
+d:INV-BUNDLE-UNIQUE a pf:Invariant ;
+  pf:statement "A bundle id is created at most once." ;
+  pf:inContext d:catalog ;
+  pf:appliesTo d:Bundle .
+
+d:INV-BUNDLE-HIDE-KEEPS-KEYS a pf:Invariant ;
+  pf:statement "Hiding a bundle does not invalidate existing subscriptions or keys (FR-7)." ;
+  pf:inContext d:catalog ;
+  pf:appliesTo d:Bundle .
+
+d:INV-PRINCIPAL-SERVICE-KEY-ONLY a pf:Invariant ;
+  pf:statement "A service principal authenticates to the data plane only through a subscription key; a disabled principal cannot be subscribed (FR-12)." ;
+  pf:inContext d:access ;
+  pf:appliesTo d:Principal .
+
+d:INV-SUB-UNIQUE a pf:Invariant ;
+  pf:statement "A subscription id is created at most once." ;
+  pf:inContext d:access ;
+  pf:appliesTo d:Subscription .
+
+d:INV-SUB-BUNDLE-SCOPE a pf:Invariant ;
+  pf:statement "In v1 a subscription is scoped to exactly one bundle; api and all-apis scopes are not offered to subscribers (F11)." ;
+  pf:inContext d:access ;
+  pf:appliesTo d:Subscription .
+
+d:INV-SUB-KEYS-SHOWN-ONCE a pf:Invariant ;
+  pf:statement "Primary and secondary keys are returned exactly once (on creation or regeneration); only their sha256 hashes are stored (FR-8, NFR-4)." ;
+  pf:inContext d:access ;
+  pf:appliesTo d:Subscription .
+
+d:INV-SUB-TRANSITIONS a pf:Invariant ;
+  pf:statement "Allowed transitions: active -> suspended, suspended -> active, active|suspended -> cancelled, active|suspended -> expired (FR-9)." ;
+  pf:inContext d:access ;
+  pf:appliesTo d:Subscription .
+
+d:INV-SUB-CANCELLED-TERMINAL a pf:Invariant ;
+  pf:statement "Cancelled is terminal: no reactivation, suspension or key regeneration afterwards (FR-9)." ;
+  pf:inContext d:access ;
+  pf:appliesTo d:Subscription .
+
+d:INV-SUB-SELF-SERVICE a pf:Invariant ;
+  pf:statement "A key may be regenerated by a GatewayAdmin or by the subscription's own principal, and only one slot at a time (FR-10)." ;
+  pf:inContext d:access ;
+  pf:appliesTo d:Subscription .
+
+d:INV-CRED-VALUE-NEVER-RETURNED a pf:Invariant ;
+  pf:statement "The management plane never returns a credential's value; upstream secrets never appear in responses, logs, OTEL, cassettes or errors (FR-13, NFR-1)." ;
+  pf:inContext d:credentials ;
+  pf:appliesTo d:Credential .
+
+d:INV-CRED-SOURCE a pf:Invariant ;
+  pf:statement "A credential's source is a member of CredentialSource and its injection a member of InjectionMode." ;
+  pf:inContext d:credentials ;
+  pf:appliesTo d:Credential .
+
+d:INV-POLICY-TOKEN-LIMIT-LLM a pf:Invariant ;
+  pf:statement "A token-limit policy applies only to llm apis (FR-16)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:Policy .
+
+d:INV-POLICY-FIXED-ORDER a pf:Invariant ;
+  pf:statement "Policies evaluate in fixed order global -> bundle -> api -> subscription; no expression language (FR-16)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:Policy .
+
+d:INV-REQ-KEY-REQUIRED a pf:Invariant ;
+  pf:statement "The subscription lane always requires a key, even in open management mode (NFR-7)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:GatewayRequest .
+
+d:INV-REQ-SUB-ACTIVE a pf:Invariant ;
+  pf:statement "A request is authorized only if its key hash matches the primary or secondary key of an active subscription (FR-9, FR-11)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:GatewayRequest .
+
+d:INV-REQ-DECLARED-OP a pf:Invariant ;
+  pf:statement "Only paths matching a declared operation are forwarded; anything else under the api prefix is answered 404 locally (FR-3)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:GatewayRequest .
+
+d:INV-REQ-BUNDLE-COVERS a pf:Invariant ;
+  pf:statement "The subscription's bundle must contain the api or MCP server addressed; tools/list shows only covered tools (FR-6)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:GatewayRequest .
+
+d:INV-REQ-WITHIN-POLICY a pf:Invariant ;
+  pf:statement "A request over a rate-limit or token-limit is rejected with 429 and retry-after (FR-16, story 7)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:GatewayRequest .
+
+d:INV-REQ-KEY-STRIPPED a pf:Invariant ;
+  pf:statement "The presented subscription key is stripped before forwarding upstream (FR-11)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:GatewayRequest .
+
+d:INV-REQ-LANE-ISOLATION a pf:Invariant ;
+  pf:statement "sim- keys never reach an upstream; passthrough traffic never gets an injected credential; subscription traffic never reaches the default UPSTREAM (NFR-2)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:GatewayRequest .
+
+d:INV-USAGE-ONE-PER-CALL a pf:Invariant ;
+  pf:statement "Every data-plane call writes exactly one usage record, attributed to the authenticated subscription (FR-17)." ;
+  pf:inContext d:governance ;
+  pf:appliesTo d:UsageRecord .
+
+d:INV-MCP-OAUTH-RESOURCE-ONLY a pf:Invariant ;
+  pf:statement "On an MCP endpoint, a bearer JWT is accepted only when it is issued by the owner's configured authorization server (Keycloak or Entra ID), its audience is that MCP server's URL, and its sub resolves to a Principal holding an active Subscription on a Bundle that contains the server; the gateway itself never issues tokens." ;
+  pf:appliesTo d:GatewayRequest .
+
+d:principal-is-oidc-sub a pf:ContextMapping ;
+  pf:mapsTo d:Principal ;
+  pf:mapsTo d:Subscription ;
+  pf:mappingKind "customer-supplier" ;
+  pf:rationale "Access owns Principal; a human principal's identity is supplied by Keycloak (OIDC sub), which the gateway conforms to rather than models." .
+
+d:api-credential-ref a pf:ContextMapping ;
+  pf:mapsTo d:Api ;
+  pf:mapsTo d:Credential ;
+  pf:mappingKind "customer-supplier" ;
+  pf:rationale "Catalog references credentials by id only; Credentials supplies resolution and injection and never exposes the value to Catalog." .
+
+d:RegisterApi a pf:Command ;
+  rdfs:label "Register api" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Api ;
+  pf:emits d:ApiRegistered .
+
+d:UpdateApi a pf:Command ;
+  rdfs:label "Update api" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Api ;
+  pf:emits d:ApiUpdated .
+
+d:RemoveApi a pf:Command ;
+  rdfs:label "Remove api" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Api ;
+  pf:emits d:ApiRemoved .
+
+d:ImportOpenApi a pf:Command ;
+  rdfs:label "Import OpenAPI operations" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Api ;
+  pf:emits d:OperationsImported .
+
+d:DeclareOperation a pf:Command ;
+  rdfs:label "Declare operation by hand" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Api ;
+  pf:emits d:OperationDeclared .
+
+d:ExposeAsMcp a pf:Command ;
+  rdfs:label "Expose api operations as MCP server" ;
+  pf:inContext d:catalog ;
+  pf:targets d:McpServer ;
+  pf:emits d:McpServerExposed .
+
+d:RegisterRemoteMcp a pf:Command ;
+  rdfs:label "Register remote MCP server" ;
+  pf:inContext d:catalog ;
+  pf:targets d:McpServer ;
+  pf:emits d:RemoteMcpRegistered .
+
+d:RemoveMcpServer a pf:Command ;
+  rdfs:label "Remove MCP server" ;
+  pf:inContext d:catalog ;
+  pf:targets d:McpServer ;
+  pf:emits d:McpServerRemoved .
+
+d:CreateBundle a pf:Command ;
+  rdfs:label "Create bundle" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Bundle ;
+  pf:emits d:BundleCreated .
+
+d:AddToBundle a pf:Command ;
+  rdfs:label "Add to bundle" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Bundle ;
+  pf:emits d:BundleMemberAdded .
+
+d:RemoveFromBundle a pf:Command ;
+  rdfs:label "Remove from bundle" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Bundle ;
+  pf:emits d:BundleMemberRemoved .
+
+d:SetBundleVisibility a pf:Command ;
+  rdfs:label "Publish or hide bundle" ;
+  pf:inContext d:catalog ;
+  pf:targets d:Bundle ;
+  pf:emits d:BundleVisibilityChanged .
+
+d:CreateServicePrincipal a pf:Command ;
+  rdfs:label "Create service principal" ;
+  pf:inContext d:access ;
+  pf:targets d:Principal ;
+  pf:emits d:ServicePrincipalCreated .
+
+d:DisablePrincipal a pf:Command ;
+  rdfs:label "Disable principal" ;
+  pf:inContext d:access ;
+  pf:targets d:Principal ;
+  pf:emits d:PrincipalDisabled .
+
+d:Subscribe a pf:Command ;
+  rdfs:label "Subscribe principal to bundle" ;
+  pf:inContext d:access ;
+  pf:targets d:Subscription ;
+  pf:emits d:SubscriptionCreated .
+
+d:RegenerateKey a pf:Command ;
+  rdfs:label "Regenerate primary or secondary key" ;
+  pf:inContext d:access ;
+  pf:targets d:Subscription ;
+  pf:emits d:KeyRegenerated .
+
+d:SuspendSubscription a pf:Command ;
+  rdfs:label "Suspend subscription" ;
+  pf:inContext d:access ;
+  pf:targets d:Subscription ;
+  pf:emits d:SubscriptionSuspended .
+
+d:ReactivateSubscription a pf:Command ;
+  rdfs:label "Reactivate subscription" ;
+  pf:inContext d:access ;
+  pf:targets d:Subscription ;
+  pf:emits d:SubscriptionReactivated .
+
+d:CancelSubscription a pf:Command ;
+  rdfs:label "Cancel subscription" ;
+  pf:inContext d:access ;
+  pf:targets d:Subscription ;
+  pf:emits d:SubscriptionCancelled .
+
+d:ExpireSubscription a pf:Command ;
+  rdfs:label "Expire subscription (expiresAt passed)" ;
+  pf:inContext d:access ;
+  pf:targets d:Subscription ;
+  pf:emits d:SubscriptionExpired .
+
+d:AttachCredential a pf:Command ;
+  rdfs:label "Attach credential" ;
+  pf:inContext d:credentials ;
+  pf:targets d:Credential ;
+  pf:emits d:CredentialAttached .
+
+d:RotateCredential a pf:Command ;
+  rdfs:label "Rotate credential" ;
+  pf:inContext d:credentials ;
+  pf:targets d:Credential ;
+  pf:emits d:CredentialRotated .
+
+d:ApplyPolicy a pf:Command ;
+  rdfs:label "Apply policy" ;
+  pf:inContext d:governance ;
+  pf:targets d:Policy ;
+  pf:emits d:PolicyApplied .
+
+d:RemovePolicy a pf:Command ;
+  rdfs:label "Remove policy" ;
+  pf:inContext d:governance ;
+  pf:targets d:Policy ;
+  pf:emits d:PolicyRemoved .
+
+d:AuthorizeRequest a pf:Command ;
+  rdfs:label "Authorize data-plane request" ;
+  pf:inContext d:governance ;
+  pf:targets d:GatewayRequest ;
+  pf:emits d:RequestAuthorized ;
+  pf:emits d:RequestRejected .
+
+d:RecordUsage a pf:Command ;
+  rdfs:label "Record usage" ;
+  pf:inContext d:governance ;
+  pf:targets d:UsageRecord ;
+  pf:emits d:UsageRecorded .
+
+d:ApiRegistered a pf:Event ;
+  rdfs:label "Api registered" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Api .
+
+d:ApiUpdated a pf:Event ;
+  rdfs:label "Api updated" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Api .
+
+d:ApiRemoved a pf:Event ;
+  rdfs:label "Api removed" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Api .
+
+d:OperationsImported a pf:Event ;
+  rdfs:label "Operations imported from OpenAPI" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Api .
+
+d:OperationDeclared a pf:Event ;
+  rdfs:label "Operation declared by hand" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Api .
+
+d:McpServerExposed a pf:Event ;
+  rdfs:label "MCP server exposed from an Api" ;
+  pf:inContext d:catalog ;
+  pf:changes d:McpServer .
+
+d:RemoteMcpRegistered a pf:Event ;
+  rdfs:label "Remote MCP server registered" ;
+  pf:inContext d:catalog ;
+  pf:changes d:McpServer .
+
+d:McpServerRemoved a pf:Event ;
+  rdfs:label "MCP server removed" ;
+  pf:inContext d:catalog ;
+  pf:changes d:McpServer .
+
+d:BundleCreated a pf:Event ;
+  rdfs:label "Bundle created" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Bundle .
+
+d:BundleMemberAdded a pf:Event ;
+  rdfs:label "Api or MCP server added to bundle" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Bundle .
+
+d:BundleMemberRemoved a pf:Event ;
+  rdfs:label "Api or MCP server removed from bundle" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Bundle .
+
+d:BundleVisibilityChanged a pf:Event ;
+  rdfs:label "Bundle published or hidden" ;
+  pf:inContext d:catalog ;
+  pf:changes d:Bundle .
+
+d:ServicePrincipalCreated a pf:Event ;
+  rdfs:label "Service principal created" ;
+  pf:inContext d:access ;
+  pf:changes d:Principal .
+
+d:PrincipalDisabled a pf:Event ;
+  rdfs:label "Principal disabled" ;
+  pf:inContext d:access ;
+  pf:changes d:Principal .
+
+d:SubscriptionCreated a pf:Event ;
+  rdfs:label "Subscription created (keys issued once)" ;
+  pf:inContext d:access ;
+  pf:changes d:Subscription .
+
+d:KeyRegenerated a pf:Event ;
+  rdfs:label "Subscription key regenerated" ;
+  pf:inContext d:access ;
+  pf:changes d:Subscription .
+
+d:SubscriptionSuspended a pf:Event ;
+  rdfs:label "Subscription suspended" ;
+  pf:inContext d:access ;
+  pf:changes d:Subscription .
+
+d:SubscriptionReactivated a pf:Event ;
+  rdfs:label "Subscription reactivated" ;
+  pf:inContext d:access ;
+  pf:changes d:Subscription .
+
+d:SubscriptionCancelled a pf:Event ;
+  rdfs:label "Subscription cancelled" ;
+  pf:inContext d:access ;
+  pf:changes d:Subscription .
+
+d:SubscriptionExpired a pf:Event ;
+  rdfs:label "Subscription expired" ;
+  pf:inContext d:access ;
+  pf:changes d:Subscription .
+
+d:CredentialAttached a pf:Event ;
+  rdfs:label "Credential attached" ;
+  pf:inContext d:credentials ;
+  pf:changes d:Credential .
+
+d:CredentialRotated a pf:Event ;
+  rdfs:label "Credential rotated" ;
+  pf:inContext d:credentials ;
+  pf:changes d:Credential .
+
+d:PolicyApplied a pf:Event ;
+  rdfs:label "Policy applied" ;
+  pf:inContext d:governance ;
+  pf:changes d:Policy .
+
+d:PolicyRemoved a pf:Event ;
+  rdfs:label "Policy removed" ;
+  pf:inContext d:governance ;
+  pf:changes d:Policy .
+
+d:RequestAuthorized a pf:Event ;
+  rdfs:label "Request authorized (credential injected, forwarded)" ;
+  pf:inContext d:governance ;
+  pf:changes d:GatewayRequest .
+
+d:RequestRejected a pf:Event ;
+  rdfs:label "Request rejected locally (401/403/404/429)" ;
+  pf:inContext d:governance ;
+  pf:changes d:GatewayRequest .
+
+d:UsageRecorded a pf:Event ;
+  rdfs:label "Usage recorded against subscription" ;
+  pf:inContext d:governance ;
+  pf:changes d:UsageRecord .
+
+d:Catalog a pf:ReadModel ;
+  rdfs:label "Catalog" ;
+  pf:projects d:ApiRegistered ;
+  pf:projects d:ApiUpdated ;
+  pf:projects d:ApiRemoved ;
+  pf:projects d:OperationsImported ;
+  pf:projects d:OperationDeclared ;
+  pf:projects d:McpServerExposed ;
+  pf:projects d:RemoteMcpRegistered ;
+  pf:projects d:McpServerRemoved ;
+  pf:projects d:BundleCreated ;
+  pf:projects d:BundleMemberAdded ;
+  pf:projects d:BundleMemberRemoved ;
+  pf:projects d:BundleVisibilityChanged .
+
+d:MySubscriptions a pf:ReadModel ;
+  rdfs:label "My subscriptions (keys masked)" ;
+  pf:projects d:SubscriptionCreated ;
+  pf:projects d:KeyRegenerated ;
+  pf:projects d:SubscriptionSuspended ;
+  pf:projects d:SubscriptionReactivated ;
+  pf:projects d:SubscriptionCancelled ;
+  pf:projects d:SubscriptionExpired .
+
+d:SubscriptionEnv a pf:ReadModel ;
+  rdfs:label "Subscription env / .mcp.json snippet" ;
+  pf:projects d:SubscriptionCreated ;
+  pf:projects d:KeyRegenerated ;
+  pf:projects d:SubscriptionCancelled ;
+  pf:projects d:SubscriptionExpired ;
+  pf:projects d:BundleMemberAdded ;
+  pf:projects d:BundleMemberRemoved ;
+  pf:projects d:McpServerExposed ;
+  pf:projects d:RemoteMcpRegistered ;
+  pf:projects d:McpServerRemoved .
+
+d:ToolList a pf:ReadModel ;
+  rdfs:label "Tool list per subscription" ;
+  pf:projects d:McpServerExposed ;
+  pf:projects d:RemoteMcpRegistered ;
+  pf:projects d:McpServerRemoved ;
+  pf:projects d:BundleMemberAdded ;
+  pf:projects d:BundleMemberRemoved ;
+  pf:projects d:SubscriptionCreated .
+
+d:UsageBySubscription a pf:ReadModel ;
+  rdfs:label "Usage by subscription and day" ;
+  pf:projects d:UsageRecorded .
+
+d:UsageByBundle a pf:ReadModel ;
+  rdfs:label "Usage by bundle, api and day" ;
+  pf:projects d:UsageRecorded .
+
+d:Principals a pf:ReadModel ;
+  rdfs:label "Principals" ;
+  pf:projects d:ServicePrincipalCreated ;
+  pf:projects d:PrincipalDisabled .
+
+d:Credentials a pf:ReadModel ;
+  rdfs:label "Credentials (values never shown)" ;
+  pf:projects d:CredentialAttached ;
+  pf:projects d:CredentialRotated .
+
+d:Policies a pf:ReadModel ;
+  rdfs:label "Policies by scope" ;
+  pf:projects d:PolicyApplied ;
+  pf:projects d:PolicyRemoved .
+
+d:SubscriptionsDueToExpire a pf:ReadModel ;
+  rdfs:label "Subscriptions past expiresAt (to-do)" ;
+  pf:projects d:SubscriptionCreated ;
+  pf:projects d:SubscriptionCancelled ;
+  pf:projects d:SubscriptionExpired .
+
+d:UnrecordedRequests a pf:ReadModel ;
+  rdfs:label "Decided requests without a usage record (to-do)" ;
+  pf:projects d:RequestAuthorized ;
+  pf:projects d:RequestRejected ;
+  pf:projects d:UsageRecorded .
+
+d:cli-catalog a pf:WireframeStep ;
+  rdfs:label "gateway-cli catalog" ;
+  pf:intent "See the bundles, apis and tools I can use." ;
+  pf:surfaces [ pf:projection d:Catalog ; pf:typedAs d:display-collection ] ;
+  pf:offers [ pf:command d:Subscribe ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:CreateBundle ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:AddToBundle ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:RemoveFromBundle ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:SetBundleVisibility ; pf:typedAs d:trigger-action ] ;
+  pf:transitionsTo d:cli-sub-list .
+
+d:cli-api-list a pf:WireframeStep ;
+  rdfs:label "gateway-cli api list" ;
+  pf:intent "Operate the registered apis and their operations." ;
+  pf:surfaces [ pf:projection d:Catalog ; pf:typedAs d:display-collection ] ;
+  pf:offers [ pf:command d:RegisterApi ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:UpdateApi ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:RemoveApi ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:ImportOpenApi ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:DeclareOperation ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:ExposeAsMcp ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:RegisterRemoteMcp ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:RemoveMcpServer ; pf:typedAs d:trigger-action ] .
+
+d:cli-mcp-tools a pf:WireframeStep ;
+  rdfs:label "gateway-cli mcp tools" ;
+  pf:intent "See which MCP tools a subscription can call." ;
+  pf:surfaces [ pf:projection d:ToolList ; pf:typedAs d:display-collection ] .
+
+d:cli-sub-list a pf:WireframeStep ;
+  rdfs:label "gateway-cli sub list" ;
+  pf:intent "See my subscriptions with keys masked and manage their lifecycle." ;
+  pf:surfaces [ pf:projection d:MySubscriptions ; pf:typedAs d:display-collection ] ;
+  pf:offers [ pf:command d:RegenerateKey ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:SuspendSubscription ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:ReactivateSubscription ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:CancelSubscription ; pf:typedAs d:trigger-action ] ;
+  pf:transitionsTo d:cli-sub-env .
+
+d:cli-sub-env a pf:WireframeStep ;
+  rdfs:label "gateway-cli sub env" ;
+  pf:intent "Get the base URL, key header and .mcp.json fragment for one subscription." ;
+  pf:surfaces [ pf:projection d:SubscriptionEnv ; pf:typedAs d:display-value ] .
+
+d:cli-principal-list a pf:WireframeStep ;
+  rdfs:label "gateway-cli principal list" ;
+  pf:intent "See and manage principals." ;
+  pf:surfaces [ pf:projection d:Principals ; pf:typedAs d:display-collection ] ;
+  pf:offers [ pf:command d:CreateServicePrincipal ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:DisablePrincipal ; pf:typedAs d:trigger-action ] .
+
+d:cli-cred-list a pf:WireframeStep ;
+  rdfs:label "gateway-cli cred list" ;
+  pf:intent "See credentials (ids, source, injection; never values) and attach or rotate them." ;
+  pf:surfaces [ pf:projection d:Credentials ; pf:typedAs d:display-collection ] ;
+  pf:offers [ pf:command d:AttachCredential ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:RotateCredential ; pf:typedAs d:trigger-action ] .
+
+d:cli-policy-list a pf:WireframeStep ;
+  rdfs:label "gateway-cli policy list" ;
+  pf:intent "See and manage policies by scope." ;
+  pf:surfaces [ pf:projection d:Policies ; pf:typedAs d:display-collection ] ;
+  pf:offers [ pf:command d:ApplyPolicy ; pf:typedAs d:trigger-action ] ;
+  pf:offers [ pf:command d:RemovePolicy ; pf:typedAs d:trigger-action ] .
+
+d:cli-usage a pf:WireframeStep ;
+  rdfs:label "gateway-cli usage" ;
+  pf:intent "Read usage by subscription, principal, bundle or api and day." ;
+  pf:surfaces [ pf:projection d:UsageBySubscription ; pf:typedAs d:display-collection ] ;
+  pf:surfaces [ pf:projection d:UsageByBundle ; pf:typedAs d:display-collection ] .
+
+d:flow-operator-publish a pf:Flow ;
+  rdfs:label "Operator publishes an api to a subscriber" ;
+  pf:contains d:cli-cred-list ;
+  pf:contains d:cli-api-list ;
+  pf:contains d:cli-catalog ;
+  pf:contains d:cli-principal-list ;
+  pf:contains d:cli-sub-list ;
+  pf:entryPage d:cli-cred-list ;
+  pf:systemOf d:sys-gateway-cli .
+
+d:flow-subscriber-connect a pf:Flow ;
+  rdfs:label "Subscriber gets connected and rotates keys" ;
+  pf:contains d:cli-sub-list ;
+  pf:contains d:cli-sub-env ;
+  pf:contains d:cli-mcp-tools ;
+  pf:entryPage d:cli-sub-list ;
+  pf:systemOf d:sys-gateway-cli .
+
+d:flow-operator-govern a pf:Flow ;
+  rdfs:label "Operator limits spend and reads usage" ;
+  pf:contains d:cli-policy-list ;
+  pf:contains d:cli-usage ;
+  pf:entryPage d:cli-policy-list ;
+  pf:systemOf d:sys-gateway-cli .
+
+d:SubscriptionState a pf:ReferenceSet ;
+  pf:referenceDataFor d:Subscription ;
+  pf:referenceValue "active" ;
+  pf:referenceValue "suspended" ;
+  pf:referenceValue "cancelled" ;
+  pf:referenceValue "expired" .
+
+d:KeySlot a pf:ReferenceSet ;
+  pf:referenceDataFor d:SubscriptionKey ;
+  pf:referenceValue "primary" ;
+  pf:referenceValue "secondary" .
+
+d:KeyHeader a pf:ReferenceSet ;
+  pf:referenceDataFor d:SubscriptionKey ;
+  pf:referenceValue "api-key" ;
+  pf:referenceValue "Ocp-Apim-Subscription-Key" ;
+  pf:referenceValue "x-api-key" ;
+  pf:referenceValue "authorization-bearer" .
+
+d:ApiKind a pf:ReferenceSet ;
+  pf:referenceDataFor d:Api ;
+  pf:referenceValue "http" ;
+  pf:referenceValue "llm" .
+
+d:McpServerKind a pf:ReferenceSet ;
+  pf:referenceDataFor d:McpServer ;
+  pf:referenceValue "from-api" ;
+  pf:referenceValue "remote" .
+
+d:BundleState a pf:ReferenceSet ;
+  pf:referenceDataFor d:Bundle ;
+  pf:referenceValue "published" ;
+  pf:referenceValue "hidden" .
+
+d:PrincipalKind a pf:ReferenceSet ;
+  pf:referenceDataFor d:Principal ;
+  pf:referenceValue "human" ;
+  pf:referenceValue "service" .
+
+d:CredentialSource a pf:ReferenceSet ;
+  pf:referenceDataFor d:Credential ;
+  pf:referenceValue "env" ;
+  pf:referenceValue "sealed" ;
+  pf:referenceValue "vault" ;
+  pf:referenceValue "entra" .
+
+d:InjectionMode a pf:ReferenceSet ;
+  pf:referenceDataFor d:InjectionSpec ;
+  pf:referenceValue "header" ;
+  pf:referenceValue "query" ;
+  pf:referenceValue "bearer" .
+
+d:PolicyKind a pf:ReferenceSet ;
+  pf:referenceDataFor d:Policy ;
+  pf:referenceValue "set-header" ;
+  pf:referenceValue "strip-header" ;
+  pf:referenceValue "rate-limit" ;
+  pf:referenceValue "token-limit" ;
+  pf:referenceValue "ip-allow" .
+
+d:PolicyScopeLevel a pf:ReferenceSet ;
+  pf:referenceDataFor d:PolicyScope ;
+  pf:referenceValue "global" ;
+  pf:referenceValue "bundle" ;
+  pf:referenceValue "api" ;
+  pf:referenceValue "subscription" .
+
+d:RequestOutcome a pf:ReferenceSet ;
+  pf:referenceDataFor d:GatewayRequest ;
+  pf:referenceValue "authorized" ;
+  pf:referenceValue "rejected" .
+
+d:sys-gateway-runtime a pf:System ;
+  rdfs:label "Gateway runtime (data plane)" ;
+  pf:systemKind "service" ;
+  pf:purpose "Accepts HTTP and LLM calls carrying a subscription key, applies policy, swaps in the upstream credential, streams the upstream response unbuffered, and records usage." ;
+  pf:targetsPlatform "linux-container" ;
+  pf:referencesDomain d:catalog ;
+  pf:referencesDomain d:access ;
+  pf:referencesDomain d:credentials ;
+  pf:referencesDomain d:governance .
+
+d:sys-management-api a pf:System ;
+  rdfs:label "Management API" ;
+  pf:systemKind "service" ;
+  pf:purpose "The /api/v1 management surface (OIDC bearer; GatewayAdmin or subscriber self-service) that every management verb goes through." ;
+  pf:targetsPlatform "linux-container" ;
+  pf:referencesDomain d:catalog ;
+  pf:referencesDomain d:access ;
+  pf:referencesDomain d:credentials ;
+  pf:referencesDomain d:governance .
+
+d:sys-gateway-cli a pf:System ;
+  rdfs:label "gateway-cli" ;
+  pf:systemKind "cli" ;
+  pf:purpose "The operator's and subscriber's terminal: every management verb (api, op, mcp, bundle, sub, principal, cred, policy, usage, catalog) plus sub env." ;
+  pf:targetsPlatform "linux" ;
+  pf:targetsPlatform "macos" ;
+  pf:targetsPlatform "windows" ;
+  pf:targetsClass "tui" ;
+  pf:referencesDomain d:catalog ;
+  pf:referencesDomain d:access ;
+  pf:referencesDomain d:credentials ;
+  pf:referencesDomain d:governance .
+
+d:sys-management-mcp a pf:System ;
+  rdfs:label "Management MCP server" ;
+  pf:systemKind "service" ;
+  pf:purpose "The same management verbs as MCP tools so an agent holding GatewayAdmin can operate the gateway; ownership checked in every tool." ;
+  pf:targetsPlatform "linux-container" ;
+  pf:referencesDomain d:catalog ;
+  pf:referencesDomain d:access ;
+  pf:referencesDomain d:credentials ;
+  pf:referencesDomain d:governance .
+
+d:sys-mcp-endpoint a pf:System ;
+  rdfs:label "MCP endpoint (/mcp/{server})" ;
+  pf:systemKind "service" ;
+  pf:purpose "Serves tools/list and tools/call for generated and remote MCP servers, filtered to the tools the presented subscription's bundle covers." ;
+  pf:targetsPlatform "linux-container" ;
+  pf:referencesDomain d:catalog ;
+  pf:referencesDomain d:access ;
+  pf:referencesDomain d:governance .
+
+d:upstream-api a pf:System ;
+  rdfs:label "Upstream API (external)" ;
+  pf:systemKind "external" ;
+  pf:purpose "The protected upstream (Foundry, Anthropic, internal HTTP, remote MCP) the gateway forwards to with an injected credential." .
+
+d:pks-agent-vault a pf:System ;
+  rdfs:label "pks-agent-vault (external)" ;
+  pf:systemKind "external" ;
+  pf:purpose "Secrets vault; resolves vault-sourced credentials through an agent grant so plaintext never passes an operator terminal." .
+
+d:entra-id a pf:System ;
+  rdfs:label "Microsoft Entra ID (external)" ;
+  pf:systemKind "external" ;
+  pf:purpose "Mints access tokens for entra-sourced credentials (Foundry data plane is Entra/RBAC-only)." .
+
+d:keycloak a pf:System ;
+  rdfs:label "Keycloak (external)" ;
+  pf:systemKind "external" ;
+  pf:purpose "OIDC identity provider for human principals and the management plane bearer." .
+
+d:trg-RegisterApi a pf:Trigger ;
+  rdfs:label "gateway-cli api add | mgmt MCP api_register" ;
+  pf:source "user" ;
+  pf:issues d:RegisterApi .
+
+d:trg-UpdateApi a pf:Trigger ;
+  rdfs:label "gateway-cli api update | mgmt MCP api_update" ;
+  pf:source "user" ;
+  pf:issues d:UpdateApi .
+
+d:trg-RemoveApi a pf:Trigger ;
+  rdfs:label "gateway-cli api rm | mgmt MCP api_remove" ;
+  pf:source "user" ;
+  pf:issues d:RemoveApi .
+
+d:trg-ImportOpenApi a pf:Trigger ;
+  rdfs:label "gateway-cli op import | mgmt MCP op_import" ;
+  pf:source "user" ;
+  pf:issues d:ImportOpenApi .
+
+d:trg-DeclareOperation a pf:Trigger ;
+  rdfs:label "gateway-cli op add | mgmt MCP op_add" ;
+  pf:source "user" ;
+  pf:issues d:DeclareOperation .
+
+d:trg-ExposeAsMcp a pf:Trigger ;
+  rdfs:label "gateway-cli mcp expose | mgmt MCP mcp_expose" ;
+  pf:source "user" ;
+  pf:issues d:ExposeAsMcp .
+
+d:trg-RegisterRemoteMcp a pf:Trigger ;
+  rdfs:label "gateway-cli mcp remote | mgmt MCP mcp_remote" ;
+  pf:source "user" ;
+  pf:issues d:RegisterRemoteMcp .
+
+d:trg-RemoveMcpServer a pf:Trigger ;
+  rdfs:label "gateway-cli mcp rm | mgmt MCP mcp_remove" ;
+  pf:source "user" ;
+  pf:issues d:RemoveMcpServer .
+
+d:trg-CreateBundle a pf:Trigger ;
+  rdfs:label "gateway-cli bundle create | mgmt MCP bundle_create" ;
+  pf:source "user" ;
+  pf:issues d:CreateBundle .
+
+d:trg-AddToBundle a pf:Trigger ;
+  rdfs:label "gateway-cli bundle add | mgmt MCP bundle_add" ;
+  pf:source "user" ;
+  pf:issues d:AddToBundle .
+
+d:trg-RemoveFromBundle a pf:Trigger ;
+  rdfs:label "gateway-cli bundle rm-member | mgmt MCP bundle_remove" ;
+  pf:source "user" ;
+  pf:issues d:RemoveFromBundle .
+
+d:trg-SetBundleVisibility a pf:Trigger ;
+  rdfs:label "gateway-cli bundle publish|hide | mgmt MCP bundle_visibility" ;
+  pf:source "user" ;
+  pf:issues d:SetBundleVisibility .
+
+d:trg-CreateServicePrincipal a pf:Trigger ;
+  rdfs:label "gateway-cli principal create | mgmt MCP principal_create" ;
+  pf:source "user" ;
+  pf:issues d:CreateServicePrincipal .
+
+d:trg-DisablePrincipal a pf:Trigger ;
+  rdfs:label "gateway-cli principal disable | mgmt MCP principal_disable" ;
+  pf:source "user" ;
+  pf:issues d:DisablePrincipal .
+
+d:trg-Subscribe a pf:Trigger ;
+  rdfs:label "gateway-cli sub create | mgmt MCP sub_create" ;
+  pf:source "user" ;
+  pf:issues d:Subscribe .
+
+d:trg-RegenerateKey a pf:Trigger ;
+  rdfs:label "gateway-cli sub regen (operator or own subscriber)" ;
+  pf:source "user" ;
+  pf:issues d:RegenerateKey .
+
+d:trg-SuspendSubscription a pf:Trigger ;
+  rdfs:label "gateway-cli sub suspend | mgmt MCP sub_suspend" ;
+  pf:source "user" ;
+  pf:issues d:SuspendSubscription .
+
+d:trg-ReactivateSubscription a pf:Trigger ;
+  rdfs:label "gateway-cli sub reactivate | mgmt MCP sub_reactivate" ;
+  pf:source "user" ;
+  pf:issues d:ReactivateSubscription .
+
+d:trg-CancelSubscription a pf:Trigger ;
+  rdfs:label "gateway-cli sub cancel | mgmt MCP sub_cancel" ;
+  pf:source "user" ;
+  pf:issues d:CancelSubscription .
+
+d:trg-AttachCredential a pf:Trigger ;
+  rdfs:label "gateway-cli cred add | mgmt MCP cred_add" ;
+  pf:source "user" ;
+  pf:issues d:AttachCredential .
+
+d:trg-RotateCredential a pf:Trigger ;
+  rdfs:label "gateway-cli cred rotate | mgmt MCP cred_rotate" ;
+  pf:source "user" ;
+  pf:issues d:RotateCredential .
+
+d:trg-ApplyPolicy a pf:Trigger ;
+  rdfs:label "gateway-cli policy apply | mgmt MCP policy_apply" ;
+  pf:source "user" ;
+  pf:issues d:ApplyPolicy .
+
+d:trg-RemovePolicy a pf:Trigger ;
+  rdfs:label "gateway-cli policy rm | mgmt MCP policy_remove" ;
+  pf:source "user" ;
+  pf:issues d:RemovePolicy .
+
+d:trg-http-request a pf:Trigger ;
+  rdfs:label "Incoming data-plane HTTP/LLM request carrying a subscription key" ;
+  pf:source "external" ;
+  pf:issues d:AuthorizeRequest .
+
+d:trg-mcp-tools-call a pf:Trigger ;
+  rdfs:label "Incoming MCP tools/call (or tools/list) at /mcp/{server} carrying a subscription key" ;
+  pf:source "external" ;
+  pf:issues d:AuthorizeRequest .
+
+d:trg-expire-subscriptions a pf:Trigger ;
+  rdfs:label "Expiry sweep: one ExpireSubscription per row past expiresAt" ;
+  pf:source "automated" ;
+  pf:issues d:ExpireSubscription ;
+  pf:watches d:SubscriptionsDueToExpire .
+
+d:trg-record-usage a pf:Trigger ;
+  rdfs:label "Usage writer: one RecordUsage per decided request without a record" ;
+  pf:source "automated" ;
+  pf:issues d:RecordUsage ;
+  pf:watches d:UnrecordedRequests .
+
+d:pks-agent-gateway a pf:Product ;
+  rdfs:label "pks-agent-gateway" ;
+  pf:purpose "Self-hosted, CLI- and agent-first API gateway: publish upstream APIs as HTTP routes and MCP tools, bundle them, give each person or agent a subscription with its own key; check key, apply policy, swap in the real credential, record usage. Not an IdP, not a vault, not billing; no setup UI." ;
+  pf:ownsDomain d:catalog ;
+  pf:ownsDomain d:access ;
+  pf:ownsDomain d:credentials ;
+  pf:ownsDomain d:governance ;
+  pf:ownsSystem d:sys-gateway-runtime ;
+  pf:ownsSystem d:sys-management-api ;
+  pf:ownsSystem d:sys-gateway-cli ;
+  pf:ownsSystem d:sys-management-mcp ;
+  pf:ownsSystem d:sys-mcp-endpoint ;
+  pf:versionedAs "0.1.0" .
+
+d:QD-NFR5-HOTPATH a pf:QualityDemand ;
+  rdfs:label "Hot-path overhead" ;
+  pf:demandKind "runtime-bound" ;
+  pf:bound "key resolution + policy check with cached credential adds <= 2 ms at p99 on the reference box" ;
+  pf:scopes d:sys-gateway-runtime ;
+  pf:measuredBy "otel-gateway-hotpath-span" .
+
+d:sys-gateway-runtime pf:boundedBy d:QD-NFR5-HOTPATH .
+

@@ -64,6 +64,16 @@ func main() {
 	// through to the proxy catch-all carrying a Bearer token.
 	mux.Handle("/api/testbench/", auth.Require(RoleGatewayAdmin)(newTestbenchHandler(store, sim)))
 
+	// Subscription lane (ADR 0001): /apis/, /mcp/, /api/v1/. Registered as
+	// subtrees so nothing under them can reach the passthrough catch-all.
+	lcfg, err := laneConfigFromEnv(dataDir)
+	if err != nil {
+		log.Fatalf("gateway config: %v", err)
+	}
+	if _, err := mountSubscriptionLane(mux, auth, lcfg); err != nil {
+		log.Fatalf("subscription lane: %v", err)
+	}
+
 	// Proxy catch-all — forwards everything else to the upstream Anthropic
 	// API. The sim gate intercepts sim-keyed requests (always — even when
 	// disabled they get a local 403, never the proxy) and handles cassette
@@ -72,7 +82,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid UPSTREAM %q: %v", upstream, err)
 	}
-	mux.Handle("/", sim.Gate(newProxy(upstreamURL, gatewayToken)))
+	// gatewayKeyGuard: a gwk_ key never rides the passthrough lane.
+	mux.Handle("/", gatewayKeyGuard(sim.Gate(newProxy(upstreamURL, gatewayToken))))
 
 	srv := &http.Server{
 		Addr:    ":" + port,

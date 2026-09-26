@@ -1,0 +1,111 @@
+id: Api-decider
+decides_for: Api
+handles:
+- RegisterApi
+- UpdateApi
+- RemoveApi
+- ImportOpenApi
+- DeclareOperation
+emits:
+- ApiRegistered
+- ApiUpdated
+- ApiRemoved
+- OperationsImported
+- OperationDeclared
+evolves_from:
+- ApiRegistered
+- ApiUpdated
+- ApiRemoved
+- OperationsImported
+- OperationDeclared
+rejects:
+- INV-API-UNIQUE
+- INV-API-KIND
+- INV-API-LIVE
+logic:
+  initial:
+    status: none
+  evolve:
+  - on: ApiRegistered
+    set:
+      status: registered
+  - on: ApiUpdated
+  - on: ApiRemoved
+    set:
+      status: removed
+  - on: OperationsImported
+  - on: OperationDeclared
+  decide:
+  - on: RegisterApi
+    guards:
+    - expr: state.status == 'none'
+      else_reject: INV-API-UNIQUE
+    - expr: command.kind == 'http' || command.kind == 'llm'
+      else_reject: INV-API-KIND
+    emit:
+    - ApiRegistered
+  - on: UpdateApi
+    guards:
+    - expr: state.status == 'registered'
+      else_reject: INV-API-LIVE
+    emit:
+    - ApiUpdated
+  - on: RemoveApi
+    guards:
+    - expr: state.status == 'registered'
+      else_reject: INV-API-LIVE
+    emit:
+    - ApiRemoved
+  - on: ImportOpenApi
+    guards:
+    - expr: state.status == 'registered'
+      else_reject: INV-API-LIVE
+    emit:
+    - OperationsImported
+  - on: DeclareOperation
+    guards:
+    - expr: state.status == 'registered'
+      else_reject: INV-API-LIVE
+    emit:
+    - OperationDeclared
+scenarios:
+- name: register an llm api
+  when: {command: RegisterApi, with: {kind: llm}}
+  then: {emit: [ApiRegistered]}
+- name: register an api id twice is rejected
+  given: [ApiRegistered]
+  when: {command: RegisterApi, with: {kind: http}}
+  then: {reject: INV-API-UNIQUE}
+- name: unknown api kind is rejected
+  when: {command: RegisterApi, with: {kind: graphql}}
+  then: {reject: INV-API-KIND}
+- name: update a registered api
+  given: [ApiRegistered]
+  when: UpdateApi
+  then: {emit: [ApiUpdated]}
+- name: cannot update an unregistered api
+  when: UpdateApi
+  then: {reject: INV-API-LIVE}
+- name: remove a registered api
+  given: [ApiRegistered]
+  when: RemoveApi
+  then: {emit: [ApiRemoved]}
+- name: cannot remove twice
+  given: [ApiRegistered, ApiRemoved]
+  when: RemoveApi
+  then: {reject: INV-API-LIVE}
+- name: import OpenAPI operations into a registered api
+  given: [ApiRegistered]
+  when: ImportOpenApi
+  then: {emit: [OperationsImported]}
+- name: cannot import into a removed api
+  given: [ApiRegistered, ApiRemoved]
+  when: ImportOpenApi
+  then: {reject: INV-API-LIVE}
+- name: declare an operation by hand
+  given: [ApiRegistered, OperationsImported]
+  when: DeclareOperation
+  then: {emit: [OperationDeclared]}
+- name: cannot declare an operation on an unknown api
+  when: DeclareOperation
+  then: {reject: INV-API-LIVE}

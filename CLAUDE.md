@@ -23,7 +23,12 @@ src/gateway/        Go single binary (stdlib + go-oidc), flat package main
   testbench_api.go  /api/testbench subtree (own inner mux — see below)
   store_testbench.go  scenarios/cassettes storage under owners/{owner}/testbench/
   Dockerfile        multi-stage alpine build, builds from project root context
-src/cli/            gateway-cli (cobra): login, project list/create, env, stats
+  gw_*.go           subscription lane: store, keys, credentials, lane, MCP,
+                    /api/v1 management plane, OpenAPI import, wiring,
+                    tenancy (owners), connectors (tunnel-protocol runners)
+src/cli/            gateway-cli (cobra): login, project, env, stats +
+                    owner/connector/api/op/mcp/bundle/principal/sub/cred/usage/catalog
+scripts/smoke.sh    real-process end-to-end check of the subscription lane
 README.md           usage, simulator/test-bench docs, Azure Container Apps deploy
 ```
 
@@ -41,8 +46,29 @@ through). See README.
 
 ## Design notes
 
-- **Dumb proxy on purpose.** No auth plane on the proxy path; the caller's
-  `x-api-key` flows through untouched. Only the `Host` header is rewritten.
+- **Three lanes (ADR 0001).** The *passthrough* lane (catch-all) is dumb on
+  purpose: the caller's `x-api-key` flows through untouched, only `Host` is
+  rewritten. The *sim* lane never reaches upstream. The *subscription* lane
+  (`/apis/`, `/mcp/`, `gw_*.go`) is the ONLY one that rewrites credentials: it
+  strips the `gwk_` key and injects the API's credential. `gatewayKeyGuard`
+  makes a `gwk_` or `gwc_` token on the catch-all a 401 — keep it wrapping the proxy.
+- **Multi-tenant subscription lane (ADR 0005).** Every lookup goes through
+  `GatewayRoot.Owner(owner)` (the only place the owner segment is validated) and
+  the owner is in every URL. Management handlers get their store from
+  `ownerStore(r)`, set by `withOwner` after the owner-admin check — never reach
+  for a store another way. Legacy passthrough/sim/OTEL stay on `GATEWAY_OWNER`.
+- **Connectors (ADR 0004).** `/connect/v1/control` speaks pks-agent-tunnel's
+  protocol unchanged (wire types imported, not copied). The frame's `owner` only
+  locates the store; the token hash decides. A `runner://` API must not carry a
+  `credential`; `X-Gateway-Context` is stripped from clients and set only toward
+  runners. Every data-plane path that reaches an upstream (`ServeAPI` AND MCP
+  `callAPITool`) must go through `Lane.upstreamTarget`.
+- **Subscription-lane invariants** (`gw_lane_test.go` enforces them): undeclared
+  operations are a local 404, never forwarded; credential values never appear
+  in responses, logs, usage or on disk in plaintext (canary test); keys are
+  stored only as sha256; key ids never contain `_` (the secret may — parse on
+  the first `_`). Proxy error handlers must not echo `err` (query injection puts
+  the secret in the URL). `scripts/smoke.sh` is the real-process end-to-end check.
 - **Streaming.** `proxy.FlushInterval = -1` is required for SSE token streaming;
   do not remove it.
 - **Open-proxy guard.** Optional `GATEWAY_TOKEN` → require `X-Gateway-Token`

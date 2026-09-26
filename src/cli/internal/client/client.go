@@ -152,3 +152,22 @@ func (c *Client) refreshToken(ctx context.Context) (string, error) {
 func (c *Client) BearerToken(ctx context.Context) (string, error) {
 	return c.refreshToken(ctx)
 }
+
+// JSON performs method on path with an optional JSON body and decodes a JSON
+// response into out (nil = discard). Non-2xx responses become errors carrying
+// the server's message.
+func (c *Client) JSON(ctx context.Context, method, path string, body, out interface{}) error {
+	resp, err := c.Do(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s %s: %s — %s", method, path, resp.Status, bytes.TrimSpace(b))
+	}
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}

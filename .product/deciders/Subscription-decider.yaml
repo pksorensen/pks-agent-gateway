@@ -1,0 +1,175 @@
+id: Subscription-decider
+decides_for: Subscription
+handles:
+- Subscribe
+- RegenerateKey
+- SuspendSubscription
+- ReactivateSubscription
+- CancelSubscription
+- ExpireSubscription
+emits:
+- SubscriptionCreated
+- KeyRegenerated
+- SubscriptionSuspended
+- SubscriptionReactivated
+- SubscriptionCancelled
+- SubscriptionExpired
+evolves_from:
+- SubscriptionCreated
+- KeyRegenerated
+- SubscriptionSuspended
+- SubscriptionReactivated
+- SubscriptionCancelled
+- SubscriptionExpired
+rejects:
+- INV-SUB-UNIQUE
+- INV-SUB-BUNDLE-SCOPE
+- INV-SUB-KEYS-SHOWN-ONCE
+- INV-SUB-TRANSITIONS
+- INV-SUB-CANCELLED-TERMINAL
+- INV-SUB-SELF-SERVICE
+logic:
+  initial:
+    status: none
+  evolve:
+  - on: SubscriptionCreated
+    set:
+      status: active
+  - on: KeyRegenerated
+  - on: SubscriptionSuspended
+    set:
+      status: suspended
+  - on: SubscriptionReactivated
+    set:
+      status: active
+  - on: SubscriptionCancelled
+    set:
+      status: cancelled
+  - on: SubscriptionExpired
+    set:
+      status: expired
+  decide:
+  - on: Subscribe
+    guards:
+    - expr: state.status == 'none'
+      else_reject: INV-SUB-UNIQUE
+    - expr: command.scope == 'bundle'
+      else_reject: INV-SUB-BUNDLE-SCOPE
+    emit:
+    - SubscriptionCreated
+  - on: RegenerateKey
+    guards:
+    - expr: state.status != 'cancelled'
+      else_reject: INV-SUB-CANCELLED-TERMINAL
+    - expr: state.status == 'active' || state.status == 'suspended'
+      else_reject: INV-SUB-TRANSITIONS
+    - expr: command.slot == 'primary' || command.slot == 'secondary'
+      else_reject: INV-SUB-SELF-SERVICE
+    - expr: command.actor_is_admin || command.actor_is_owner
+      else_reject: INV-SUB-SELF-SERVICE
+    emit:
+    - event: KeyRegenerated
+      with:
+        slot: =command.slot
+  - on: SuspendSubscription
+    guards:
+    - expr: state.status != 'cancelled'
+      else_reject: INV-SUB-CANCELLED-TERMINAL
+    - expr: state.status == 'active'
+      else_reject: INV-SUB-TRANSITIONS
+    emit:
+    - SubscriptionSuspended
+  - on: ReactivateSubscription
+    guards:
+    - expr: state.status != 'cancelled'
+      else_reject: INV-SUB-CANCELLED-TERMINAL
+    - expr: state.status == 'suspended'
+      else_reject: INV-SUB-TRANSITIONS
+    emit:
+    - SubscriptionReactivated
+  - on: CancelSubscription
+    guards:
+    - expr: state.status != 'cancelled'
+      else_reject: INV-SUB-CANCELLED-TERMINAL
+    - expr: state.status == 'active' || state.status == 'suspended'
+      else_reject: INV-SUB-TRANSITIONS
+    emit:
+    - SubscriptionCancelled
+  - on: ExpireSubscription
+    guards:
+    - expr: state.status != 'cancelled'
+      else_reject: INV-SUB-CANCELLED-TERMINAL
+    - expr: state.status == 'active' || state.status == 'suspended'
+      else_reject: INV-SUB-TRANSITIONS
+    emit:
+    - SubscriptionExpired
+scenarios:
+- name: subscribe to a bundle issues keys once
+  when: {command: Subscribe, with: {scope: bundle}}
+  then: {emit: [SubscriptionCreated]}
+- name: subscribing twice is rejected
+  given: [SubscriptionCreated]
+  when: {command: Subscribe, with: {scope: bundle}}
+  then: {reject: INV-SUB-UNIQUE}
+- name: api-scoped subscription is not offered in v1
+  when: {command: Subscribe, with: {scope: api}}
+  then: {reject: INV-SUB-BUNDLE-SCOPE}
+- name: subscriber regenerates own secondary key
+  given: [SubscriptionCreated]
+  when: {command: RegenerateKey, with: {slot: secondary, actor_is_admin: false, actor_is_owner: true}}
+  then: {emit: [{event: KeyRegenerated, with: {slot: secondary}}]}
+- name: a stranger cannot regenerate a key
+  given: [SubscriptionCreated]
+  when: {command: RegenerateKey, with: {slot: primary, actor_is_admin: false, actor_is_owner: false}}
+  then: {reject: INV-SUB-SELF-SERVICE}
+- name: unknown key slot is rejected
+  given: [SubscriptionCreated]
+  when: {command: RegenerateKey, with: {slot: both, actor_is_admin: true, actor_is_owner: false}}
+  then: {reject: INV-SUB-SELF-SERVICE}
+- name: no key regeneration after cancel
+  given: [SubscriptionCreated, SubscriptionCancelled]
+  when: {command: RegenerateKey, with: {slot: primary, actor_is_admin: true, actor_is_owner: false}}
+  then: {reject: INV-SUB-CANCELLED-TERMINAL}
+- name: operator suspends an active subscription (story 4)
+  given: [SubscriptionCreated]
+  when: SuspendSubscription
+  then: {emit: [SubscriptionSuspended]}
+- name: cannot suspend a suspended subscription
+  given: [SubscriptionCreated, SubscriptionSuspended]
+  when: SuspendSubscription
+  then: {reject: INV-SUB-TRANSITIONS}
+- name: reactivate a suspended subscription
+  given: [SubscriptionCreated, SubscriptionSuspended]
+  when: ReactivateSubscription
+  then: {emit: [SubscriptionReactivated]}
+- name: cancelled is terminal
+  given: [SubscriptionCreated, SubscriptionCancelled]
+  when: ReactivateSubscription
+  then: {reject: INV-SUB-CANCELLED-TERMINAL}
+- name: cannot reactivate an active subscription
+  given: [SubscriptionCreated]
+  when: ReactivateSubscription
+  then: {reject: INV-SUB-TRANSITIONS}
+- name: cancel a suspended subscription
+  given: [SubscriptionCreated, SubscriptionSuspended]
+  when: CancelSubscription
+  then: {emit: [SubscriptionCancelled]}
+- name: cancel twice is rejected
+  given: [SubscriptionCreated, SubscriptionCancelled]
+  when: CancelSubscription
+  then: {reject: INV-SUB-CANCELLED-TERMINAL}
+- name: cannot cancel a subscription that does not exist
+  when: CancelSubscription
+  then: {reject: INV-SUB-TRANSITIONS}
+- name: expire an active subscription past expiresAt
+  given: [SubscriptionCreated]
+  when: ExpireSubscription
+  then: {emit: [SubscriptionExpired]}
+- name: a cancelled subscription never expires
+  given: [SubscriptionCreated, SubscriptionCancelled]
+  when: ExpireSubscription
+  then: {reject: INV-SUB-CANCELLED-TERMINAL}
+- name: an expired subscription cannot be reactivated
+  given: [SubscriptionCreated, SubscriptionExpired]
+  when: ReactivateSubscription
+  then: {reject: INV-SUB-TRANSITIONS}

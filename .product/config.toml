@@ -1,0 +1,13 @@
+name = "pks-agent-gateway"
+schema-version = "1"
+
+[product]
+responsibility = "A self-hosted, CLI- and agent-first API gateway: an operator publishes upstream APIs as HTTP routes and MCP tools, bundles them, and gives each person or agent a subscription with its own key; every call is key-checked, policy-gated, credential-swapped and usage-attributed. It is not an identity provider (Keycloak/Entra are), not a secrets vault (pks-agent-vault is), not a billing system, and has no setup UI."
+
+[author]
+# default agent CLI for `product session start`: claude | copilot
+# cli = "claude"
+
+[mcp]
+write = false
+port = 7777

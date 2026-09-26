@@ -33,8 +33,13 @@ Claude Code ──HTTPS──▶ pks-agent-gateway (Azure) ──HTTPS──▶ 
 | `GATEWAY_TOKEN` | _(unset)_ | If set, callers must send `X-Gateway-Token: <token>` |
 | `GATEWAY_SIM_ENABLED` | _(unset)_ | `1` enables the LLM simulator (below). `sim-` keys are ALWAYS intercepted — when disabled they get a local 403, never the proxy |
 | `USER_DATA_DIR` | `./data` | File store root (projects, OTEL, testbench scenarios/cassettes) |
-| `GATEWAY_OWNER` | `default` | Owner segment of the store layout |
+| `GATEWAY_OWNER` | `default` | Owner of the legacy single-owner features (passthrough stats, sim, `/api/projects`). The subscription lane is multi-tenant: owners are claimed via `/api/v1/owners` |
 | `OIDC_ISSUER` | _(unset)_ | OIDC issuer for the `/api` management plane; unset = open dev mode |
+| `GATEWAY_SEAL_KEY` | _(unset)_ | 32 bytes (hex/base64) sealing `sealed` credentials at rest; unset = sealed credentials refused |
+| `MCP_OAUTH_ISSUER` | `OIDC_ISSUER` | Authorization server advertised for `/mcp/*` (Keycloak or Entra ID); unset = key-only MCP |
+| `MCP_OAUTH_AUDIENCE` | _(unset)_ | Extra accepted token audience (Keycloak audience-mapper value) |
+| `PUBLIC_BASE_URL` | _(derived)_ | Canonical base URL; the MCP resource/audience is `<base>/mcp/<owner>/<server>` |
+| `ENTRA_AUTHORITY_HOST` | `https://login.microsoftonline.com` | Token endpoint root for `entra` credentials |
 
 ## LLM simulator ("test bench")
 
@@ -158,6 +163,78 @@ GET|DELETE     /api/testbench/sessions[/{key}]
 **Guarantee:** a request carrying a `sim-` key is never forwarded upstream —
 the sim branch has no code path to the proxy, enforced by a unit test whose
 fake upstream fails the build if reached. Prompts in test traffic stay local.
+
+## Subscription lane: APIs, MCP servers, bundles, keys
+
+The operator registers upstream APIs, exposes their operations as MCP tools,
+groups both into **bundles**, and gives each **principal** a **subscription**
+with its own `gwk_…` key. The gateway swaps that key for the real upstream
+credential (`env`, `sealed`, `entra`; `vault` next) — or serves the API from a
+**runner connector** so the credential never reaches the gateway at all.
+CLI/agent-first: everything is `/api/v1` + `gateway-cli`; the agentics.dk
+console is a client of the same API. Design: `docs/prd/0001-api-gateway.md`,
+`docs/adr/0001`–`0005`.
+
+**Multi-tenant (ADR 0005).** Everything lives under an **owner**, claimed once
+(`gateway-cli owner claim acme`; the claimer's OIDC `sub` is the first admin,
+realm `GatewayAdmin` is a superuser). The owner is in every URL:
+`/api/v1/owners/{owner}/…`, `/apis/{owner}/{api}/…`, `/mcp/{owner}/{server}`.
+A key only works at its own owner's paths. The CLI takes `--owner` or
+`GATEWAY_OWNER`.
+
+```bash
+export GATEWAY_OWNER=acme
+gateway-cli owner claim acme
+printf '%s\n' "$FOUNDRY_KEY" | gateway-cli cred create speech-key --source sealed --header api-key
+gateway-cli api create speech --upstream https://<res>.openai.azure.com/openai/deployments/whisper \
+  --credential speech-key --op "transcribe=POST /audio/transcriptions"
+gateway-cli mcp create speech-tools --api speech --ops '*'
+gateway-cli bundle create speech-basic --apis speech --mcp speech-tools
+gateway-cli principal create kim --sub <oidc-sub> --email kim@example.com
+gateway-cli sub create --bundle speech-basic --principal kim --env   # key shown once
+
+# subscriber (no login needed: reads GET /apis/acme/_catalog with the key)
+GATEWAY_KEY=gwk_… gateway-cli sub env --owner acme
+curl -H "Api-Key: $GATEWAY_KEY" "$GATEWAY_URL/apis/acme/speech/audio/transcriptions?api-version=…" -F file=@a.wav
+# MCP (Streamable HTTP): $GATEWAY_URL/mcp/acme/speech-tools with the same Api-Key header,
+# or an OAuth token from MCP_OAUTH_ISSUER (RFC 9728 metadata at
+# /.well-known/oauth-protected-resource/mcp/acme/speech-tools)
+```
+
+**Runner connectors (ADR 0004).** For an API whose credential should stay on a
+machine you control (e.g. pks-cli holding Scaleway keys), create a connector
+and run an unmodified `agent-tunnel host` there. It dials *out* to
+`/connect/v1/control`; the gateway carries each call over the tunnel. The API
+has no `credential`, the subscriber key is stripped, and the runner receives
+`X-Gateway-Context: sub=…; principal=…; bundle=…; op=…` for its own audit.
+
+```bash
+gateway-cli connector create scw            # gwc_… token shown once + the host command
+# on the runner machine:
+agent-tunnel host --server wss://gateway.agentics.dk/connect --owner acme --name scw \
+  --token gwc_… --http api=127.0.0.1:8900
+gateway-cli api create scw --upstream runner://scw/api/v1 --op "list_servers=GET /servers"
+gateway-cli connector get scw               # presence: connected, sessions, slots, lastSeen
+```
+
+No live session ⇒ `503 connector offline` (local, never a passthrough); several
+sessions ⇒ round-robin. Disabling a connector drops all its sessions;
+regenerating one token slot drops only the sessions that slot authenticated, so
+rotation works like subscription keys. The runner sees `Host: localhost`.
+
+Keys go in `Api-Key`, `Ocp-Apim-Subscription-Key`, `X-Api-Key` or
+`Authorization: Bearer gwk_…`; all are stripped before the upstream call. Only
+declared operations are forwarded (anything else is a local 404), a `gwk_` key
+on the Anthropic passthrough lane is a 401, and credential values are never
+returned by the API or written in plaintext. Usage is recorded per subscription
+under `owners/{owner}/gateway/usage/`.
+
+End-to-end check with real processes, a local echo upstream and a real
+`agent-tunnel host` built from the sibling `pks-agent-tunnel` checkout:
+
+```bash
+scripts/smoke.sh          # KEEP=1 leaves it running
+```
 
 ## Run locally
 
