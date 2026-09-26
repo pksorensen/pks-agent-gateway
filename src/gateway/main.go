@@ -20,6 +20,7 @@ func main() {
 	gatewayToken := os.Getenv("GATEWAY_TOKEN")
 	oidcIssuer := os.Getenv("OIDC_ISSUER")
 	simEnabled := os.Getenv("GATEWAY_SIM_ENABLED") == "1"
+	speech := speechConfigFromEnv()
 
 	store := NewStore(dataDir, owner)
 	sim := newSimulator(store, simEnabled)
@@ -45,6 +46,8 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintln(w, `{"status":"ok"}`)
 	})
+	mux.HandleFunc("GET /v1/capabilities", newSpeechCapabilitiesHandler(speech))
+	mux.HandleFunc("/v1/speech/realtime", newSpeechRealtimeHandler(speech))
 
 	// OTEL ingestion — no auth required.
 	otel := newOtelHandler(store)
