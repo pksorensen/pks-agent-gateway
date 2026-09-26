@@ -4,6 +4,13 @@ A transparent, streaming reverse proxy to the Anthropic API — with a built-in
 **LLM simulator / test bench** (see below) for exercising Claude Code harnesses
 without a real subscription.
 
+The Gateway also exposes provider-neutral capability contracts. Components such
+as `pks-agent-meeting` call the stable Gateway contract while an internal runtime
+adapter translates it to Azure Foundry, another cloud, or a local provider. See
+[Gateway capabilities](docs/capabilities/README.md), including the experimental
+[`speech.realtime.transcribe`](docs/capabilities/speech.realtime.transcribe.md)
+WebSocket specification.
+
 **Why:** on networks where `api.anthropic.com` is blocked, deploy this gateway
 somewhere reachable (an Azure Container App), point Claude Code's
 `ANTHROPIC_BASE_URL` at it, and every request — including streaming token
