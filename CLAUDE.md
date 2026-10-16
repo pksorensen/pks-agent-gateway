@@ -25,11 +25,15 @@ src/gateway/        Go single binary (stdlib + go-oidc), flat package main
   Dockerfile        multi-stage alpine build, builds from project root context
   gw_*.go           subscription lane: store, keys, credentials, lane, MCP,
                     /api/v1 management plane, OpenAPI import, wiring,
-                    tenancy (owners), connectors (tunnel-protocol runners)
+                    tenancy (owners), connectors (tunnel-protocol runners),
+                    entra-cert minting + `identity init` (gw_entracert/
+                    gw_identity), entra-jwt callers (gw_entrajwt), limits
+                    and body caps (gw_limits)
 src/cli/            gateway-cli (cobra): login, project, env, stats +
                     owner/connector/api/op/mcp/bundle/principal/sub/cred/usage/catalog
 scripts/smoke.sh    real-process end-to-end check of the subscription lane
 README.md           usage, simulator/test-bench docs, Azure Container Apps deploy
+docs/deploy/        host-internal deploy runbooks (arvo Coolify box)
 ```
 
 ## Build & test
@@ -69,6 +73,16 @@ through). See README.
   stored only as sha256; key ids never contain `_` (the secret may — parse on
   the first `_`). Proxy error handlers must not echo `err` (query injection puts
   the secret in the URL). `scripts/smoke.sh` is the real-process end-to-end check.
+- **Entra on both sides (ADR 0006).** `entra-cert` keys are read from
+  `GATEWAY_IDENTITY_DIR` on every mint, must be 0600, and only their paths are
+  stored; binding one needs realm GatewayAdmin. `entra-jwt` accepts ONE token
+  version (v2) and one issuer tenant — don't add v1 "to be safe"; RS256 only.
+  `azp` → `Principal.AppID`; bad token 401, unknown app 403. Keyless
+  subscriptions have empty hashes and can't be regenerated.
+- **Limits before minting.** In `ServeAPI`, body-cap/411/429 decisions come
+  from `Content-Length` and happen before `credentialFor`, so a rejected request
+  never costs an upstream token. Bodies stream (`MaxBytesReader` + counting
+  reader); never buffer them, never log them.
 - **Streaming.** `proxy.FlushInterval = -1` is required for SSE token streaming;
   do not remove it.
 - **Open-proxy guard.** Optional `GATEWAY_TOKEN` → require `X-Gateway-Token`
@@ -99,4 +113,5 @@ through). See README.
 ## Roadmap (later, if needed)
 
 - Aspire hosting drop-in (mirror `pks-agent-tunnel`'s `src/aspire/`).
-- Optional request/usage logging, rate limiting, multi-upstream (Bedrock/Vertex).
+- Optional request/usage logging, multi-upstream (Bedrock/Vertex).
+- Limits on MCP tool calls; `entra-jwt` for the realtime speech WS.

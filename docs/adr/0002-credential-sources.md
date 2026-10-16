@@ -3,6 +3,8 @@
 - Status: **Accepted** 2026-09-23 (vault: option A)
 - Date: 2026-09-23
 - Context doc: [PRD 0001](../prd/0001-api-gateway.md) (F13, F14, FR-13..15)
+- Extended by: [ADR 0006](0006-entra-jwt-callers-and-entra-cert-upstreams.md) — the
+  certificate variant is its own source, `entra-cert`, minted in-process
 
 ## Context
 

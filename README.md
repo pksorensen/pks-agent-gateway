@@ -46,7 +46,14 @@ Claude Code ──HTTPS──▶ pks-agent-gateway (Azure) ──HTTPS──▶ 
 | `MCP_OAUTH_ISSUER` | `OIDC_ISSUER` | Authorization server advertised for `/mcp/*` (Keycloak or Entra ID); unset = key-only MCP |
 | `MCP_OAUTH_AUDIENCE` | _(unset)_ | Extra accepted token audience (Keycloak audience-mapper value) |
 | `PUBLIC_BASE_URL` | _(derived)_ | Canonical base URL; the MCP resource/audience is `<base>/mcp/<owner>/<server>` |
-| `ENTRA_AUTHORITY_HOST` | `https://login.microsoftonline.com` | Token endpoint root for `entra` credentials |
+| `ENTRA_AUTHORITY_HOST` | `https://login.microsoftonline.com` | Entra root for `entra`/`entra-cert` token minting and `entra-jwt` discovery |
+| `GATEWAY_MODE` | `dev` | `prod` refuses to start without `OIDC_ISSUER` |
+| `GATEWAY_PASSTHROUGH` | `on` | `off` disables the Anthropic passthrough (catch-all answers a local 404) |
+| `GATEWAY_REALTIME_SPEECH_ENABLED` | _(unset)_ | `1` enables `/v1/speech/realtime` (also needs `SPEECH_RUNTIME_URL`) |
+| `GATEWAY_IDENTITY_DIR` | `{USER_DATA_DIR}/identity` | Where `entra-cert` key/cert files must live (`gateway identity init` writes here) |
+| `ENTRA_JWT_TENANT` | _(unset)_ | Issuer tenant GUID; enables Entra v2 app-token caller auth on `/apis/` |
+| `ENTRA_JWT_AUDIENCES` | _(unset)_ | Accepted `aud` values (the gateway API app's client id), comma-separated |
+| `GATEWAY_DEFAULT_MAX_BODY_BYTES` | `6291456` | Request body cap for operations without `maxBodyBytes` |
 
 ## LLM simulator ("test bench")
 
@@ -176,11 +183,11 @@ fake upstream fails the build if reached. Prompts in test traffic stay local.
 The operator registers upstream APIs, exposes their operations as MCP tools,
 groups both into **bundles**, and gives each **principal** a **subscription**
 with its own `gwk_…` key. The gateway swaps that key for the real upstream
-credential (`env`, `sealed`, `entra`; `vault` next) — or serves the API from a
+credential (`env`, `sealed`, `entra`, `entra-cert`; `vault` next) — or serves the API from a
 **runner connector** so the credential never reaches the gateway at all.
 CLI/agent-first: everything is `/api/v1` + `gateway-cli`; the agentics.dk
 console is a client of the same API. Design: `docs/prd/0001-api-gateway.md`,
-`docs/adr/0001`–`0005`.
+`docs/adr/0001`–`0006`.
 
 **Multi-tenant (ADR 0005).** Everything lives under an **owner**, claimed once
 (`gateway-cli owner claim acme`; the claimer's OIDC `sub` is the first admin,
@@ -235,6 +242,18 @@ declared operations are forwarded (anything else is a local 404), a `gwk_` key
 on the Anthropic passthrough lane is a 401, and credential values are never
 returned by the API or written in plaintext. Usage is recorded per subscription
 under `owners/{owner}/gateway/usage/`.
+
+**No shared secrets: Entra on both sides (ADR 0006).** A workload can call
+`/apis/` with an Entra **v2 app-only access token** instead of a key
+(`ENTRA_JWT_TENANT` + `ENTRA_JWT_AUDIENCES`). The token's `azp` must match a
+principal's `appId`; that principal's subscriptions decide access, and those can
+be `keyless`. Upstream, an `entra-cert` credential mints Foundry tokens with the
+gateway's own certificate (`gateway identity init` creates it; the key never
+leaves `/data/identity`). Principals can carry `limits` — requests/min and
+**audio seconds/day** estimated from `Content-Length` on operations with
+`"meter": "audio"` — and every operation has a body cap (default 6 MiB).
+Operation paths may contain `:` (`/speechtotext/transcriptions:transcribe`).
+Runbook: [docs/deploy/arvo-coolify.md](docs/deploy/arvo-coolify.md).
 
 End-to-end check with real processes, a local echo upstream and a real
 `agent-tunnel host` built from the sibling `pks-agent-tunnel` checkout:
@@ -308,15 +327,15 @@ claude
 
 ## Consume the published image (customer path)
 
-CI publishes a **public** image to GitHub Container Registry on every push to
-`main` and every `v*` tag:
+The release workflow publishes the image to the Agentics registry on every
+release-please release (version tag + `latest`):
 
 ```
-ghcr.io/pksorensen/pks-agent-gateway:latest
+registry.agentics.dk/agentics/pks-agent-gateway:<version>
+registry.agentics.dk/agentics/pks-agent-gateway:latest
 ```
 
-Because it's public, the customer's Azure Container App pulls it with **no
-registry credentials**:
+Pin a version in deployments. To run it as an Azure Container App:
 
 ```bash
 RG=pks-agent-gateway
@@ -327,7 +346,7 @@ az containerapp create \
   --name pks-agent-gateway \
   --resource-group $RG \
   --environment gw-env \
-  --image ghcr.io/pksorensen/pks-agent-gateway:latest \
+  --image registry.agentics.dk/agentics/pks-agent-gateway:<version> \
   --ingress external \
   --target-port 8080 \
   --min-replicas 1
@@ -336,6 +355,9 @@ az containerapp create \
 ```
 
 It prints the FQDN — that's your `ANTHROPIC_BASE_URL`.
+
+For a host-internal deployment with no published ports (the arvo Coolify box),
+see [docs/deploy/arvo-coolify.md](docs/deploy/arvo-coolify.md).
 
 ## Point Claude Code at the deployed gateway
 
