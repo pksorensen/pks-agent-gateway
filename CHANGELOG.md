@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0](https://github.com/pksorensen/pks-agent-gateway/compare/pks-agent-gateway-v1.2.0...pks-agent-gateway-v1.3.0) (2026-10-16)
+
+
+### Features
+
+* **cli:** entra-cert credentials, principal app-id and limits, keyless subs ([c7f8e2c](https://github.com/pksorensen/pks-agent-gateway/commit/c7f8e2c6bfd49d4f0ef8cfb25ea1ef49397f0a6b))
+* **gateway:** entra-cert credential source and identity init ([7c60f40](https://github.com/pksorensen/pks-agent-gateway/commit/7c60f4099cf80148c7705d7e996021239e8f83ba))
+* **gateway:** entra-jwt caller auth on /apis/ ([77e93c4](https://github.com/pksorensen/pks-agent-gateway/commit/77e93c4ca9505989cdad8ad92a2848c6556d8db5))
+* **gateway:** prod mode, kill switches, per-principal limits, body caps ([d7732ca](https://github.com/pksorensen/pks-agent-gateway/commit/d7732ca110875af42d9d8ee5385e655c3d07566f))
+
+
+### Bug Fixes
+
+* **gateway:** log entra-jwt rejection reasons; runbook container lookup ([8ea8ecc](https://github.com/pksorensen/pks-agent-gateway/commit/8ea8ecc5285ff5bc25e5dc613db01d6fee14d670))
+
 ## [1.2.0](https://github.com/pksorensen/pks-agent-gateway/compare/pks-agent-gateway-v1.1.0...pks-agent-gateway-v1.2.0) (2026-09-26)
 
 
