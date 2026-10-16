@@ -28,6 +28,9 @@ type Lane struct {
 	// MCP OAuth (optional). issuer empty = key-only.
 	oauthIssuer   string
 	oauthAudience string // extra accepted audience (Keycloak mapper value)
+
+	// entra is the entra-jwt caller verifier for /apis/ (ADR 0006); nil = off.
+	entra         *entraJWTVerifier
 	verify        TokenVerifier
 	publicBaseURL string // e.g. https://gw.example.com; empty = derive from request
 }
@@ -94,6 +97,12 @@ func (l *Lane) authorizeOAuth(ctx context.Context, st *GatewayStore, raw, resour
 	if err != nil {
 		return nil, &denial{http.StatusForbidden, "no principal for this identity"}
 	}
+	return l.grantForPrincipal(st, p, covers)
+}
+
+// grantForPrincipal finds an active subscription of p whose bundle covers the
+// target. Used by token-authenticated callers, who present no key.
+func (l *Lane) grantForPrincipal(st *GatewayStore, p *Principal, covers func(*Bundle) bool) (*grant, *denial) {
 	subs, err := listKind[Subscription](st, kindSubscription)
 	if err != nil {
 		return nil, &denial{http.StatusInternalServerError, "store error"}
@@ -155,22 +164,29 @@ func (l *Lane) ServeAPI(w http.ResponseWriter, r *http.Request) {
 	apiID := r.PathValue("api")
 	rest := "/" + r.PathValue("rest")
 
-	key, ok := presentedGatewayKey(r)
-	if !ok {
+	// A gwk_ key, or (when configured) an Entra app-only access token.
+	var authorize func(covers func(*Bundle) bool) (*grant, *denial)
+	if key, ok := presentedGatewayKey(r); ok {
+		authorize = func(covers func(*Bundle) bool) (*grant, *denial) { return l.authorizeKey(st, key, covers) }
+	} else if tok, ok := bearerEntraToken(r); ok && l.entra != nil {
+		authorize = func(covers func(*Bundle) bool) (*grant, *denial) {
+			return l.authorizeEntra(r.Context(), st, tok, covers)
+		}
+	} else {
 		jsonError(w, "missing gateway key", http.StatusUnauthorized)
 		return
 	}
 	api, err := st.GetApi(apiID)
 	if err != nil {
-		// Same answer as a bad key: don't reveal which API ids exist.
-		if _, d := l.authorizeKey(st, key, func(*Bundle) bool { return false }); d != nil && d.status == http.StatusUnauthorized {
+		// Same answer as a bad credential: don't reveal which API ids exist.
+		if _, d := authorize(func(*Bundle) bool { return false }); d != nil && d.status == http.StatusUnauthorized {
 			jsonError(w, d.msg, d.status)
 			return
 		}
 		jsonError(w, "no such api", http.StatusNotFound)
 		return
 	}
-	g, d := l.authorizeKey(st, key, func(b *Bundle) bool { return b.hasApi(api.ID) })
+	g, d := authorize(func(b *Bundle) bool { return b.hasApi(api.ID) })
 	if d != nil {
 		jsonError(w, d.msg, d.status)
 		return

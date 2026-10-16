@@ -26,6 +26,8 @@ type laneConfig struct {
 	oauthAudience string
 	publicBaseURL string
 	verify        TokenVerifier // nil = derive from oauthIssuer via discovery
+	// entraJWT enables entra-jwt caller auth on /apis/ (ADR 0006); nil = off.
+	entraJWT *entraJWTConfig
 }
 
 func laneConfigFromEnv(dataDir string) (laneConfig, error) {
@@ -33,7 +35,19 @@ func laneConfigFromEnv(dataDir string) (laneConfig, error) {
 	if err != nil {
 		return laneConfig{}, err
 	}
+	var ej *entraJWTConfig
+	if t := os.Getenv("ENTRA_JWT_TENANT"); t != "" {
+		ej = &entraJWTConfig{
+			Tenant:        t,
+			Audiences:     splitList(os.Getenv("ENTRA_JWT_AUDIENCES")),
+			AuthorityHost: env("ENTRA_AUTHORITY_HOST", "https://login.microsoftonline.com"),
+		}
+		if err := ej.validate(); err != nil {
+			return laneConfig{}, err
+		}
+	}
 	return laneConfig{
+		entraJWT:      ej,
 		dataDir:       dataDir,
 		sealer:        sealer,
 		identityDir:   os.Getenv("GATEWAY_IDENTITY_DIR"),
@@ -81,6 +95,14 @@ func mountSubscriptionLane(mux *http.ServeMux, auth *OIDCMiddleware, cfg laneCon
 		}
 		lane.verify = v
 	}
+	if cfg.entraJWT != nil {
+		v, err := newEntraJWTVerifier(*cfg.entraJWT)
+		if err != nil {
+			return nil, err
+		}
+		lane.entra = v
+		log.Printf("entra-jwt caller auth on /apis/: tenant %s, v2 tokens, audiences %v", cfg.entraJWT.Tenant, cfg.entraJWT.Audiences)
+	}
 	if cfg.sealer == nil {
 		log.Println("GATEWAY_SEAL_KEY not set — sealed credentials are disabled")
 	}
@@ -109,4 +131,9 @@ func mountSubscriptionLane(mux *http.ServeMux, auth *OIDCMiddleware, cfg laneCon
 	api.hub = lane.hub
 	mux.Handle("/api/v1/", auth.Require()(api))
 	return lane, nil
+}
+
+// splitList parses a comma/space separated env list.
+func splitList(v string) []string {
+	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
 }

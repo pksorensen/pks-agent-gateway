@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,13 +114,16 @@ const (
 )
 
 type Principal struct {
-	ID        string        `json:"id"`
-	Kind      PrincipalKind `json:"kind"`
-	Sub       string        `json:"sub,omitempty"` // OIDC subject (humans; optional for services)
-	Email     string        `json:"email,omitempty"`
-	Name      string        `json:"name,omitempty"`
-	Disabled  bool          `json:"disabled,omitempty"`
-	CreatedAt time.Time     `json:"createdAt"`
+	ID   string        `json:"id"`
+	Kind PrincipalKind `json:"kind"`
+	Sub  string        `json:"sub,omitempty"` // OIDC subject (humans; optional for services)
+	// AppID is the Entra client id a service authenticates as with an
+	// entra-jwt access token (its azp claim). Unique per owner.
+	AppID     string    `json:"appId,omitempty"`
+	Email     string    `json:"email,omitempty"`
+	Name      string    `json:"name,omitempty"`
+	Disabled  bool      `json:"disabled,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type SubState string
@@ -132,15 +136,18 @@ const (
 )
 
 type Subscription struct {
-	ID            string     `json:"id"`
-	Bundle        string     `json:"bundle"`
-	Principal     string     `json:"principal"`
-	State         SubState   `json:"state"`
-	PrimaryHash   string     `json:"primaryHash"`
-	SecondaryHash string     `json:"secondaryHash"`
-	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+	ID            string   `json:"id"`
+	Bundle        string   `json:"bundle"`
+	Principal     string   `json:"principal"`
+	State         SubState `json:"state"`
+	PrimaryHash   string   `json:"primaryHash"`
+	SecondaryHash string   `json:"secondaryHash"`
+	// Keyless subscriptions have no gwk_ keys at all: their principal
+	// authenticates with an entra-jwt token. Empty hashes never match a key.
+	Keyless   bool       `json:"keyless,omitempty"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
 // EffectiveState folds expiry into the stored state.
@@ -309,6 +316,23 @@ func (g *GatewayStore) PrincipalBySub(sub string) (*Principal, error) {
 	}
 	for i := range ps {
 		if ps[i].Sub == sub {
+			return &ps[i], nil
+		}
+	}
+	return nil, errNotFound
+}
+
+// PrincipalByAppID finds the principal bound to an Entra app id (azp).
+func (g *GatewayStore) PrincipalByAppID(appID string) (*Principal, error) {
+	if appID == "" {
+		return nil, errNotFound
+	}
+	ps, err := listKind[Principal](g, kindPrincipal)
+	if err != nil {
+		return nil, err
+	}
+	for i := range ps {
+		if strings.EqualFold(ps[i].AppID, appID) {
 			return &ps[i], nil
 		}
 	}

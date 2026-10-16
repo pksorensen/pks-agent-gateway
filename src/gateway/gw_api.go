@@ -782,6 +782,9 @@ func (a *gatewayAPI) createPrincipal(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Kind == "" {
 		p.Kind = PrincipalHuman
+		if p.AppID != "" {
+			p.Kind = PrincipalService
+		}
 	}
 	if p.Kind != PrincipalHuman && p.Kind != PrincipalService {
 		jsonError(w, "kind must be human or service", http.StatusBadRequest)
@@ -794,6 +797,16 @@ func (a *gatewayAPI) createPrincipal(w http.ResponseWriter, r *http.Request) {
 	if p.Sub != "" {
 		if other, err := st.PrincipalBySub(p.Sub); err == nil {
 			jsonError(w, "sub already bound to principal "+other.ID, http.StatusConflict)
+			return
+		}
+	}
+	if p.AppID != "" {
+		if p.Kind != PrincipalService {
+			jsonError(w, "appId is only for kind service", http.StatusBadRequest)
+			return
+		}
+		if other, err := st.PrincipalByAppID(p.AppID); err == nil {
+			jsonError(w, "appId already bound to principal "+other.ID, http.StatusConflict)
 			return
 		}
 	}
@@ -841,13 +854,14 @@ type subscriptionView struct {
 	Bundle    string     `json:"bundle"`
 	Principal string     `json:"principal"`
 	State     SubState   `json:"state"`
+	Keyless   bool       `json:"keyless,omitempty"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
 func (a *gatewayAPI) view(s *Subscription) subscriptionView {
-	return subscriptionView{ID: s.ID, Bundle: s.Bundle, Principal: s.Principal,
+	return subscriptionView{ID: s.ID, Bundle: s.Bundle, Principal: s.Principal, Keyless: s.Keyless,
 		State: s.EffectiveState(a.now()), ExpiresAt: s.ExpiresAt, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
 }
 
@@ -888,6 +902,9 @@ func (a *gatewayAPI) createSubscription(w http.ResponseWriter, r *http.Request) 
 		Bundle    string     `json:"bundle"`
 		Principal string     `json:"principal"`
 		ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+		// Keyless: no gwk_ keys are minted; the principal must authenticate
+		// with an entra-jwt token (it needs an appId).
+		Keyless bool `json:"keyless,omitempty"`
 	}
 	if err := decodeBody(r, &in); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
@@ -918,6 +935,20 @@ func (a *gatewayAPI) createSubscription(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	now := a.now().UTC()
+	if in.Keyless {
+		if p.AppID == "" {
+			jsonError(w, "a keyless subscription needs a principal with an appId", http.StatusBadRequest)
+			return
+		}
+		s := &Subscription{ID: in.ID, Bundle: in.Bundle, Principal: p.ID, State: SubActive, Keyless: true,
+			ExpiresAt: in.ExpiresAt, CreatedAt: now, UpdatedAt: now}
+		if err := st.put(kindSubscription, s.ID, s); err != nil {
+			storeErr(w, "subscription", err)
+			return
+		}
+		writeJSONStatus(w, http.StatusCreated, map[string]any{"subscription": a.view(s)})
+		return
+	}
 	pk, ph := newSubscriptionKey(in.ID)
 	sk, sh := newSubscriptionKey(in.ID)
 	s := &Subscription{ID: in.ID, Bundle: in.Bundle, Principal: p.ID, State: SubActive,
@@ -987,6 +1018,10 @@ func (a *gatewayAPI) regenerate(self bool) http.HandlerFunc {
 		}
 		if err := decodeBody(r, &p); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if s.Keyless {
+			jsonError(w, "subscription is keyless; it authenticates with an entra-jwt token", http.StatusConflict)
 			return
 		}
 		state := s.EffectiveState(a.now())
