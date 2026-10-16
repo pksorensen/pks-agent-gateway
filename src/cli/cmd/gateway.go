@@ -192,9 +192,13 @@ func opCommands() *cobra.Command {
 	put := leaf("put <api> <op-id> <METHOD> <path>", "Declare or replace an operation", 4, nil)
 	summary := put.Flags().String("summary", "", "summary (becomes the MCP tool description)")
 	schema := put.Flags().String("schema", "", "JSON Schema file for the tool input")
+	maxBody := put.Flags().Int64("max-body-bytes", 0, "request body cap (0 = gateway default 6 MiB, -1 = none)")
+	meter := put.Flags().String("meter", "", `"audio" charges Content-Length / audio-bytes-per-second against audio quotas`)
+	bps := put.Flags().Int64("audio-bytes-per-second", 0, "audio estimate rate (0 = 32000, 16 kHz PCM16 mono)")
 	put.RunE = run("PUT", func(a []string) string { return "/api/v1/apis/" + esc(a[0]) + "/operations/" + esc(a[1]) },
 		func(_ *cobra.Command, a []string) (any, error) {
-			body := map[string]any{"method": strings.ToUpper(a[2]), "path": a[3], "summary": *summary}
+			body := map[string]any{"method": strings.ToUpper(a[2]), "path": a[3], "summary": *summary,
+				"maxBodyBytes": *maxBody, "meter": *meter, "audioBytesPerSecond": *bps}
 			if *schema != "" {
 				b, err := os.ReadFile(*schema)
 				if err != nil {
@@ -294,16 +298,33 @@ func principalCommands() *cobra.Command {
 	email := create.Flags().String("email", "", "email")
 	name := create.Flags().String("name", "", "display name")
 	kind := create.Flags().String("kind", "human", "human | service")
-	create.RunE = run("POST", fixed("/api/v1/principals"), func(_ *cobra.Command, a []string) (any, error) {
-		return map[string]any{"id": a[0], "sub": *sub, "email": *email, "name": *name, "kind": *kind}, nil
+	appID := create.Flags().String("app-id", "", "Entra client id this service authenticates as (entra-jwt azp); implies --kind service")
+	rpm := create.Flags().Int("rpm", 0, "limit: requests per minute (0 = none)")
+	audio := create.Flags().Int64("audio-seconds-per-day", 0, "limit: estimated audio seconds per UTC day (0 = none)")
+	create.RunE = run("POST", fixed("/api/v1/principals"), func(c *cobra.Command, a []string) (any, error) {
+		k := *kind
+		if *appID != "" && !c.Flags().Changed("kind") {
+			k = "service"
+		}
+		body := map[string]any{"id": a[0], "sub": *sub, "email": *email, "name": *name, "kind": k, "appId": *appID}
+		if *rpm != 0 || *audio != 0 {
+			body["limits"] = map[string]any{"requestsPerMinute": *rpm, "audioSecondsPerDay": *audio}
+		}
+		return body, nil
 	})
 	p := func(verb string) func([]string) string {
 		return func(a []string) string { return "/api/v1/principals/" + esc(a[0]) + "/" + verb }
 	}
+	limits := leaf("limits <id>", "Replace a principal's limits (no flags = clear)", 1, nil)
+	lRPM := limits.Flags().Int("rpm", 0, "requests per minute (0 = none)")
+	lAudio := limits.Flags().Int64("audio-seconds-per-day", 0, "estimated audio seconds per UTC day (0 = none)")
+	limits.RunE = run("PUT", p("limits"), func(*cobra.Command, []string) (any, error) {
+		return map[string]any{"requestsPerMinute": *lRPM, "audioSecondsPerDay": *lAudio}, nil
+	})
 	return group("principal", "Manage principals (who can hold subscriptions)",
 		leaf("list", "List principals", 0, run("GET", fixed("/api/v1/principals"), nil)),
 		leaf("get <id>", "Show a principal", 1, run("GET", func(a []string) string { return "/api/v1/principals/" + esc(a[0]) }, nil)),
-		create,
+		create, limits,
 		leaf("disable <id>", "Disable (all their subscriptions stop working)", 1, run("POST", p("disable"), nil)),
 		leaf("enable <id>", "Re-enable", 1, run("POST", p("enable"), nil)),
 	)
@@ -341,6 +362,7 @@ func subCommands() *cobra.Command {
 	id := create.Flags().String("id", "", "subscription id (default <principal>-<bundle>)")
 	expires := create.Flags().String("expires", "", "RFC 3339 expiry")
 	asEnv := create.Flags().Bool("env", false, "print the subscriber's env/.mcp.json block instead of JSON")
+	keyless := create.Flags().Bool("keyless", false, "mint no keys; the principal authenticates with an Entra token (needs --app-id)")
 	_ = create.MarkFlagRequired("bundle")
 	_ = create.MarkFlagRequired("principal")
 	create.RunE = func(cmd *cobra.Command, _ []string) error {
@@ -355,9 +377,16 @@ func subCommands() *cobra.Command {
 		if *expires != "" {
 			body["expiresAt"] = *expires
 		}
+		if *keyless {
+			body["keyless"] = true
+		}
 		var raw json.RawMessage
 		if err := doJSON(cmd, c, "POST", "/api/v1/subscriptions", body, &raw); err != nil {
 			return err
+		}
+		if *keyless {
+			fmt.Println(string(raw))
+			return nil
 		}
 		fmt.Fprintln(os.Stderr, "# Keys are shown once and stored only as hashes. Save them now.")
 		if !*asEnv {
@@ -475,21 +504,24 @@ func printSubscriberEnv(cmd *cobra.Command, base, owner, key string) error {
 
 func credCommands() *cobra.Command {
 	create := leaf("create <id>", "Register an upstream credential (sealed values are read from stdin)", 1, nil)
-	source := create.Flags().String("source", "", "env | sealed | entra | vault (required)")
+	source := create.Flags().String("source", "", "env | sealed | entra | entra-cert | vault (required)")
 	header := create.Flags().String("header", "", "inject into this header")
 	query := create.Flags().String("query", "", "inject into this query parameter")
 	bearer := create.Flags().Bool("bearer", false, "inject as Authorization: Bearer")
 	envVar := create.Flags().String("var", "", "env: variable name on the gateway")
-	tenant := create.Flags().String("tenant", "", "entra: tenant id")
-	clientID := create.Flags().String("client-id", "", "entra: app (client) id")
+	tenant := create.Flags().String("tenant", "", "entra/entra-cert: tenant id of the upstream app")
+	clientID := create.Flags().String("client-id", "", "entra/entra-cert: app (client) id")
 	clientSecret := create.Flags().String("client-secret", "", "entra: id of the credential holding the client secret")
 	scope := create.Flags().String("scope", "", "entra: scope, e.g. https://cognitiveservices.azure.com/.default")
 	item := create.Flags().String("item", "", "vault: <owner>/<item>")
+	keyFile := create.Flags().String("key-file", "", "entra-cert: key PEM inside GATEWAY_IDENTITY_DIR, e.g. key.pem")
+	certFile := create.Flags().String("cert-file", "", "entra-cert: cert PEM inside GATEWAY_IDENTITY_DIR, e.g. cert.pem")
 	_ = create.MarkFlagRequired("source")
 	create.RunE = run("POST", fixed("/api/v1/credentials"), func(_ *cobra.Command, a []string) (any, error) {
 		body := map[string]any{"id": a[0], "source": *source,
 			"inject": map[string]any{"header": *header, "query": *query, "bearer": *bearer},
-			"var":    *envVar, "tenant": *tenant, "clientId": *clientID, "clientSecret": *clientSecret, "scope": *scope, "item": *item}
+			"var":    *envVar, "tenant": *tenant, "clientId": *clientID, "clientSecret": *clientSecret, "scope": *scope, "item": *item,
+			"keyFile": *keyFile, "certFile": *certFile}
 		if *source == "sealed" {
 			v, err := readSecretStdin("secret value")
 			if err != nil {
