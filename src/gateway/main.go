@@ -13,6 +13,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "identity" {
+		os.Exit(runIdentityCmd(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	port := env("PORT", "8080")
 	upstream := env("UPSTREAM", "https://api.anthropic.com")
 	dataDir := env("USER_DATA_DIR", "./data")

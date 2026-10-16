@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -17,6 +18,9 @@ import (
 type laneConfig struct {
 	dataDir string
 	sealer  *Sealer
+	// identityDir holds the gateway's own key/cert for entra-cert
+	// credentials (ADR 0006). Empty = {dataDir}/identity.
+	identityDir string
 	// MCP OAuth (FR-6a): the gateway is a protected resource only.
 	oauthIssuer   string
 	oauthAudience string
@@ -32,6 +36,7 @@ func laneConfigFromEnv(dataDir string) (laneConfig, error) {
 	return laneConfig{
 		dataDir:       dataDir,
 		sealer:        sealer,
+		identityDir:   os.Getenv("GATEWAY_IDENTITY_DIR"),
 		oauthIssuer:   env("MCP_OAUTH_ISSUER", os.Getenv("OIDC_ISSUER")),
 		oauthAudience: os.Getenv("MCP_OAUTH_AUDIENCE"),
 		publicBaseURL: strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"), "/"),
@@ -60,6 +65,10 @@ func oidcTokenVerifier(ctx context.Context, issuer string) (TokenVerifier, error
 func mountSubscriptionLane(mux *http.ServeMux, auth *OIDCMiddleware, cfg laneConfig) (*Lane, error) {
 	root := NewGatewayRoot(cfg.dataDir)
 	creds := NewCredentialResolver(cfg.sealer)
+	creds.identityDir = cfg.identityDir
+	if creds.identityDir == "" {
+		creds.identityDir = filepath.Join(root.dataDir, "identity")
+	}
 	lane := NewLane(root, creds)
 	lane.oauthIssuer = cfg.oauthIssuer
 	lane.oauthAudience = cfg.oauthAudience

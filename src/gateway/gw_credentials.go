@@ -28,6 +28,9 @@ const (
 	CredSealed CredentialSourceKind = "sealed"
 	CredVault  CredentialSourceKind = "vault"
 	CredEntra  CredentialSourceKind = "entra"
+	// CredEntraCert mints a client-credentials token with a certificate
+	// client assertion (ADR 0006). The key never leaves its file.
+	CredEntraCert CredentialSourceKind = "entra-cert"
 )
 
 type Credential struct {
@@ -45,6 +48,11 @@ type Credential struct {
 	ClientID     string `json:"clientId,omitempty"`
 	ClientSecret string `json:"clientSecret,omitempty"` // credential id
 	Scope        string `json:"scope,omitempty"`
+
+	// entra-cert: PEM paths inside GATEWAY_IDENTITY_DIR (Tenant, ClientID and
+	// Scope above apply too). Only the paths are stored, never the PEM.
+	KeyFile  string `json:"keyFile,omitempty"`
+	CertFile string `json:"certFile,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -96,19 +104,27 @@ type credentialView struct {
 	Tenant    string               `json:"tenant,omitempty"`
 	ClientID  string               `json:"clientId,omitempty"`
 	Scope     string               `json:"scope,omitempty"`
+	KeyFile   string               `json:"keyFile,omitempty"`
+	CertFile  string               `json:"certFile,omitempty"`
 	HasValue  bool                 `json:"hasValue"`
 	CreatedAt time.Time            `json:"createdAt"`
 	UpdatedAt time.Time            `json:"updatedAt"`
 }
 
-func (c *Credential) view() credentialView {
+// view reports metadata only. identityDir resolves entra-cert paths so
+// HasValue can say whether the key is present and private.
+func (c *Credential) view(identityDir string) credentialView {
 	v := credentialView{ID: c.ID, Source: c.Source, Inject: c.Inject, Var: c.Var, Item: c.Item,
-		Tenant: c.Tenant, ClientID: c.ClientID, Scope: c.Scope, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
+		Tenant: c.Tenant, ClientID: c.ClientID, Scope: c.Scope, KeyFile: c.KeyFile, CertFile: c.CertFile,
+		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
 	switch c.Source {
 	case CredSealed:
 		v.HasValue = c.Sealed != ""
 	case CredEnv:
 		v.HasValue = os.Getenv(c.Var) != ""
+	case CredEntraCert:
+		_, err := loadAssertionIdentity(identityDir, c.KeyFile, c.CertFile)
+		v.HasValue = err == nil
 	default:
 		v.HasValue = true
 	}
@@ -177,9 +193,20 @@ type CredentialResolver struct {
 	client *http.Client
 	// entraAuthority is the token-endpoint host root; overridable for tests.
 	entraAuthority string
+	// identityDir confines entra-cert key/cert paths (GATEWAY_IDENTITY_DIR).
+	identityDir string
+	now         func() time.Time
 
-	mu    sync.Mutex
-	cache map[string]cachedToken
+	mu       sync.Mutex
+	cache    map[string]cachedToken
+	inflight map[string]*tokenFlight
+}
+
+// tokenFlight is one in-progress token mint that concurrent callers share.
+type tokenFlight struct {
+	done  chan struct{}
+	value string
+	err   error
 }
 
 type cachedToken struct {
@@ -192,7 +219,9 @@ func NewCredentialResolver(sealer *Sealer) *CredentialResolver {
 		sealer:         sealer,
 		client:         &http.Client{Timeout: 30 * time.Second},
 		entraAuthority: env("ENTRA_AUTHORITY_HOST", "https://login.microsoftonline.com"),
+		now:            time.Now,
 		cache:          map[string]cachedToken{},
+		inflight:       map[string]*tokenFlight{},
 	}
 }
 
@@ -232,6 +261,8 @@ func (cr *CredentialResolver) resolve(ctx context.Context, st *GatewayStore, id 
 		return v, nil
 	case CredEntra:
 		return cr.entraToken(ctx, st, c, depth)
+	case CredEntraCert:
+		return cr.entraCertToken(ctx, c)
 	case CredVault:
 		// ADR 0002: agent-grant release with a <1h TTL. Not wired yet.
 		return "", fmt.Errorf("%w: %q: vault source not implemented yet", errCredential, id)
@@ -288,9 +319,13 @@ func (cr *CredentialResolver) entraToken(ctx context.Context, st *GatewayStore, 
 	return tok.AccessToken, nil
 }
 
-// Forget drops a cached token (after rotation).
-func (cr *CredentialResolver) Forget(st *GatewayStore, id string) {
+// Forget drops a cached token (after rotation or delete). entra-cert tokens
+// are cached by (tenant, clientId, scope), not by credential id.
+func (cr *CredentialResolver) Forget(st *GatewayStore, c *Credential) {
 	cr.mu.Lock()
-	delete(cr.cache, cacheKey(st, id))
+	delete(cr.cache, cacheKey(st, c.ID))
+	if c.Source == CredEntraCert {
+		delete(cr.cache, certCacheKey(c))
+	}
 	cr.mu.Unlock()
 }

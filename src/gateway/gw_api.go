@@ -1066,7 +1066,7 @@ func (a *gatewayAPI) listCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]credentialView, 0, len(cs))
 	for i := range cs {
-		out = append(out, cs[i].view())
+		out = append(out, cs[i].view(a.creds.identityDir))
 	}
 	writeJSONStatus(w, http.StatusOK, out)
 }
@@ -1082,6 +1082,8 @@ type credentialInput struct {
 	ClientID     string               `json:"clientId,omitempty"`
 	ClientSecret string               `json:"clientSecret,omitempty"`
 	Scope        string               `json:"scope,omitempty"`
+	KeyFile      string               `json:"keyFile,omitempty"`
+	CertFile     string               `json:"certFile,omitempty"`
 }
 
 func (a *gatewayAPI) createCredential(w http.ResponseWriter, r *http.Request) {
@@ -1141,6 +1143,25 @@ func (a *gatewayAPI) createCredential(w http.ResponseWriter, r *http.Request) {
 			c.Inject = Injection{Bearer: true}
 		}
 		c.Tenant, c.ClientID, c.ClientSecret, c.Scope = in.Tenant, in.ClientID, in.ClientSecret, in.Scope
+	case CredEntraCert:
+		// The key/cert are host files shared by every owner on this gateway,
+		// so binding one to a credential is a superuser act (ADR 0006).
+		if c := claimsFromCtx(r.Context()); c == nil || !c.IsAdmin() {
+			jsonError(w, "entra-cert credentials need the realm "+RoleGatewayAdmin+" role", http.StatusForbidden)
+			return
+		}
+		if in.Tenant == "" || in.ClientID == "" || in.Scope == "" || in.KeyFile == "" || in.CertFile == "" {
+			jsonError(w, "entra-cert credential needs tenant, clientId, scope, keyFile and certFile", http.StatusBadRequest)
+			return
+		}
+		if _, err := loadAssertionIdentity(a.creds.identityDir, in.KeyFile, in.CertFile); err != nil {
+			jsonError(w, "entra-cert: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if in.Inject == (Injection{}) {
+			c.Inject = Injection{Bearer: true}
+		}
+		c.Tenant, c.ClientID, c.Scope, c.KeyFile, c.CertFile = in.Tenant, in.ClientID, in.Scope, in.KeyFile, in.CertFile
 	case CredVault:
 		if in.Item == "" {
 			jsonError(w, "vault credential needs item (<owner>/<item>)", http.StatusBadRequest)
@@ -1148,7 +1169,7 @@ func (a *gatewayAPI) createCredential(w http.ResponseWriter, r *http.Request) {
 		}
 		c.Item = in.Item
 	default:
-		jsonError(w, "source must be env, sealed, entra or vault", http.StatusBadRequest)
+		jsonError(w, "source must be env, sealed, entra, entra-cert or vault", http.StatusBadRequest)
 		return
 	}
 	if in.Value != "" && in.Source != CredSealed {
@@ -1159,7 +1180,7 @@ func (a *gatewayAPI) createCredential(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, "credential", err)
 		return
 	}
-	writeJSONStatus(w, http.StatusCreated, c.view())
+	writeJSONStatus(w, http.StatusCreated, c.view(a.creds.identityDir))
 }
 
 func (a *gatewayAPI) getCredential(w http.ResponseWriter, r *http.Request) {
@@ -1169,7 +1190,7 @@ func (a *gatewayAPI) getCredential(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, "credential", err)
 		return
 	}
-	writeJSONStatus(w, http.StatusOK, c.view())
+	writeJSONStatus(w, http.StatusOK, c.view(a.creds.identityDir))
 }
 
 func (a *gatewayAPI) deleteCredential(w http.ResponseWriter, r *http.Request) {
@@ -1198,11 +1219,16 @@ func (a *gatewayAPI) deleteCredential(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "credential is still referenced by: "+strings.Join(refs, ", "), http.StatusConflict)
 		return
 	}
+	c, err := st.GetCredential(id)
+	if err != nil {
+		storeErr(w, "credential", err)
+		return
+	}
 	if err := st.remove(kindCredential, id); err != nil {
 		storeErr(w, "credential", err)
 		return
 	}
-	a.creds.Forget(st, id)
+	a.creds.Forget(st, c)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1242,8 +1268,8 @@ func (a *gatewayAPI) rotateCredential(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, "credential", err)
 		return
 	}
-	a.creds.Forget(st, c.ID)
-	writeJSONStatus(w, http.StatusOK, c.view())
+	a.creds.Forget(st, c)
+	writeJSONStatus(w, http.StatusOK, c.view(a.creds.identityDir))
 }
 
 // --- Usage ---
