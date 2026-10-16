@@ -94,9 +94,13 @@ again only re-prints them; it never overwrites. The private key stays in
    entries.
 3. Grant its service principal data-plane roles on the Foundry resource
    (`contextand-cs-foundry`, Sweden Central):
-   - `Cognitive Services Speech User` for speech;
+   - `Cognitive Services Speech User` for speech. `Cognitive Services User`
+     also covers it; confirm when the role is assigned.
    - a role that covers the Decision-1 call, such as `Cognitive Services User`.
-     That one role also covers speech.
+
+   A bearer token for `https://cognitiveservices.azure.com` is accepted on the
+   custom-domain host for `transcriptions:transcribe`. This was verified against
+   the resource with a user token.
 
    Both APIs use the same scope, `https://cognitiveservices.azure.com/.default`,
    so one `entra-cert` credential and one cached token serve both.
