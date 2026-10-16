@@ -228,7 +228,7 @@ func TestSpeechTranscribeColonPath(t *testing.T) {
 	part, _ := mw.CreatePart(h)
 	part.Write(append([]byte("RIFF\x24\x00\x00\x00WAVEfmt "), bytes.Repeat([]byte{0, 1}, 3200)...))
 	def, _ := mw.CreateFormField("definition")
-	def.Write([]byte(`{"locales":["da"],"enhancedMode":{"enabled":true,"model":"mai-transcribe-1.5","phraseList":["Gjellervand"]}}`))
+	def.Write([]byte(`{"locales":["da"],"phraseList":{"phrases":["Gjellervand"]},"enhancedMode":{"enabled":true,"model":"mai-transcribe-2"}}`))
 	mw.Close()
 	ct := mw.FormDataContentType()
 
@@ -267,5 +267,57 @@ func TestSpeechTranscribeColonPath(t *testing.T) {
 	}
 	if c, _ := g.do("POST", "/apis/test/speech/speechtotext/transcriptions:other", "{}", g.key(key)); c != 404 {
 		t.Fatalf("other colon verb: %d", c)
+	}
+}
+
+// TestTwoAPIsOneCredentialSiteLayout: the vandvaerk site calls
+// ${AI_GATEWAY_URL}/speech/… and ${AI_GATEWAY_URL}/decision/… with
+// AI_GATEWAY_URL = …/apis/arvo. Both APIs share one upstream credential; the
+// decision op is capped at 64 KB and counted per request, never as audio.
+func TestTwoAPIsOneCredentialSiteLayout(t *testing.T) {
+	up := newFakeUpstream(t)
+	g := newTestGateway(t, nil)
+	g.must(201, "POST", "/api/v1/owners", map[string]any{"id": "arvo"})
+	g.must(201, "POST", "/api/v1/owners/arvo/credentials", map[string]any{
+		"id": "foundry", "source": "sealed", "value": canary, "inject": map[string]any{"bearer": true}})
+	g.must(201, "POST", "/api/v1/owners/arvo/apis", map[string]any{"id": "speech", "upstream": up.URL + "/s", "credential": "foundry",
+		"operations": []map[string]any{{"id": "transcribe", "method": "POST", "path": "/speechtotext/transcriptions:transcribe", "meter": "audio"}}})
+	g.must(201, "POST", "/api/v1/owners/arvo/apis", map[string]any{"id": "decision", "upstream": up.URL + "/d", "credential": "foundry",
+		"operations": []map[string]any{{"id": "systemone", "method": "POST", "path": "/providers/microsoft/v1/systemone", "maxBodyBytes": 65536}}})
+	g.must(201, "POST", "/api/v1/owners/arvo/bundles", map[string]any{"id": "ai", "apis": []string{"speech", "decision"}})
+	g.must(201, "POST", "/api/v1/owners/arvo/principals", map[string]any{"id": "site", "kind": "service",
+		"limits": map[string]any{"requestsPerMinute": 100, "audioSecondsPerDay": 1}})
+	var issued issuedKeys
+	_ = json.Unmarshal([]byte(g.must(201, "POST", "/api/v1/owners/arvo/subscriptions", map[string]any{"bundle": "ai", "principal": "site"})), &issued)
+	base := "/apis/arvo" // AI_GATEWAY_URL path
+
+	// Decision calls are never audio-metered: the 1 s/day audio quota does not bite.
+	for i := 0; i < 3; i++ {
+		if c, out := g.do("POST", base+"/decision/providers/microsoft/v1/systemone", `{"model":"Decision-1","state":{},"questions":[]}`, g.key(issued.PrimaryKey)); c != 200 {
+			t.Fatalf("decision %d: %d %s", i, c, out)
+		}
+	}
+	if h := up.last(); h.Path != "/d/providers/microsoft/v1/systemone" || h.Header.Get("Authorization") != "Bearer "+canary {
+		t.Fatalf("decision upstream: %s auth=%v", h.Path, h.Header.Get("Authorization") != "")
+	}
+	if c, _ := g.do("POST", base+"/decision/providers/microsoft/v1/systemone", strings.Repeat("x", 65537), g.key(issued.PrimaryKey)); c != 413 {
+		t.Fatalf("decision over 64 KB: %d", c)
+	}
+	if c, _ := g.do("POST", base+"/speech/speechtotext/transcriptions:transcribe?api-version=2025-10-15", strings.Repeat("a", 32000), g.key(issued.PrimaryKey)); c != 200 {
+		t.Fatalf("speech: %d", c)
+	}
+	if h := up.last(); h.Path != "/s/speechtotext/transcriptions:transcribe" || h.Query != "api-version=2025-10-15" {
+		t.Fatalf("speech upstream: %s ?%s", h.Path, h.Query)
+	}
+	// Cross-API paths don't leak: the speech path under decision is undeclared.
+	if c, _ := g.do("POST", base+"/decision/speechtotext/transcriptions:transcribe", "{}", g.key(issued.PrimaryKey)); c != 404 {
+		t.Fatalf("cross-api path: %d", c)
+	}
+	var u struct {
+		Total usageTotals `json:"total"`
+	}
+	_ = json.Unmarshal([]byte(g.must(200, "GET", "/api/v1/owners/arvo/usage", nil)), &u)
+	if u.Total.AudioSeconds != 1 {
+		t.Fatalf("audio seconds = %d, want 1 (speech only)", u.Total.AudioSeconds)
 	}
 }

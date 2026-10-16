@@ -6,8 +6,9 @@ This deploys the gateway as a **host-internal** service, which means:
 - reachable only as `http://ai-gateway:8080` on the `arvo-works` docker network;
 - persistent state on a volume at `/data`.
 
-The first caller is `gjelvand-map`, which uses Danish speech-to-text from Azure
-Foundry. The design is in [ADR 0006](../adr/0006-entra-jwt-callers-and-entra-cert-upstreams.md).
+The first caller is `gjelvand-map` (the vandvaerk site). It uses two Azure
+Foundry APIs in Sweden Central through one gateway credential: Danish
+speech-to-text (`speech`) and Decision-1 (`decision`). The design is in [ADR 0006](../adr/0006-entra-jwt-callers-and-entra-cert-upstreams.md).
 
 > Use an image **newer than 1.2.0**. `entra-cert`, `entra-jwt`, limits and
 > `GATEWAY_MODE` arrive in the release after it.
@@ -66,7 +67,8 @@ gateway mode=prod management-auth=OIDC passthrough=off sim=off realtime-speech=o
 
 - the Keycloak issuer (discovery runs at boot, and the gateway exits if it fails);
 - `login.microsoftonline.com` (token minting and JWKS);
-- the Foundry host.
+- the Foundry hosts `contextand-cs-foundry.cognitiveservices.azure.com` and
+  `contextand-cs-foundry.services.ai.azure.com`.
 
 No inbound access is needed.
 
@@ -90,8 +92,14 @@ again only re-prints them; it never overwrites. The private key stays in
 2. Add the printed certificate to its `keyCredentials`.
    `PATCH /applications/{id}` replaces the whole list, so include any existing
    entries.
-3. Grant its service principal a Speech data-plane role on the Foundry resource.
-   `Cognitive Services Speech User` is the narrowest role.
+3. Grant its service principal data-plane roles on the Foundry resource
+   (`contextand-cs-foundry`, Sweden Central):
+   - `Cognitive Services Speech User` for speech;
+   - a role that covers the Decision-1 call, such as `Cognitive Services User`.
+     That one role also covers speech.
+
+   Both APIs use the same scope, `https://cognitiveservices.azure.com/.default`,
+   so one `entra-cert` credential and one cached token serve both.
 
 **Issuer tenant (callers):**
 
@@ -123,25 +131,36 @@ curl "${H[@]}" -X POST $B/owners/$O/credentials -d '{
   "scope": "https://cognitiveservices.azure.com/.default",
   "keyFile": "key.pem", "certFile": "cert.pem"}'            # inject defaults to Bearer
 
-# the API: one declared operation, colon path, metered as audio, 6 MiB cap
+# speech: one declared operation, colon path, metered as audio, 6 MiB cap
 curl "${H[@]}" -X POST $B/owners/$O/apis -d '{
-  "id": "speech", "name": "Azure Speech (Foundry)",
-  "upstream": "https://contextand-cs-foundry-us-east.cognitiveservices.azure.com",
+  "id": "speech", "name": "Azure Speech (Foundry, Sweden Central)",
+  "upstream": "https://contextand-cs-foundry.cognitiveservices.azure.com",
   "credential": "foundry-speech",
   "operations": [{"id": "transcribe", "method": "POST",
     "path": "/speechtotext/transcriptions:transcribe",
     "summary": "Fast transcription (multipart: audio + definition)",
     "meter": "audio", "maxBodyBytes": 6291456}]}'
 
-curl "${H[@]}" -X POST $B/owners/$O/bundles -d '{"id":"speech","apis":["speech"]}'
+# decision: same credential, small JSON bodies, 64 KB cap, counted per request
+curl "${H[@]}" -X POST $B/owners/$O/apis -d '{
+  "id": "decision", "name": "Decision-1 (Foundry, Sweden Central)",
+  "upstream": "https://contextand-cs-foundry.services.ai.azure.com",
+  "credential": "foundry-speech",
+  "operations": [{"id": "systemone", "method": "POST",
+    "path": "/providers/microsoft/v1/systemone",
+    "summary": "Decision-1: {model, state, questions}",
+    "maxBodyBytes": 65536}]}'
 
-# the caller: its Entra app id (the token's azp) + limits
+curl "${H[@]}" -X POST $B/owners/$O/bundles -d '{"id":"vandvaerk-ai","apis":["speech","decision"]}'
+
+# the caller: its Entra app id (the token's azp) + limits. requestsPerMinute
+# covers both APIs; audioSecondsPerDay is charged by speech only.
 curl "${H[@]}" -X POST $B/owners/$O/principals -d '{
   "id": "gjelvand-map", "kind": "service", "appId": "<gjelvand-map app client id>",
   "limits": {"requestsPerMinute": 30, "audioSecondsPerDay": 3600}}'
 
 # keyless: no gwk_ key exists for this subscription
-curl "${H[@]}" -X POST $B/owners/$O/subscriptions -d '{"bundle":"speech","principal":"gjelvand-map","keyless":true}'
+curl "${H[@]}" -X POST $B/owners/$O/subscriptions -d '{"bundle":"vandvaerk-ai","principal":"gjelvand-map","keyless":true}'
 ```
 
 The same steps with `gateway-cli` (`--owner arvo` or `GATEWAY_OWNER=arvo`):
@@ -151,22 +170,44 @@ gateway-cli owner claim arvo
 gateway-cli cred create foundry-speech --source entra-cert --tenant <upstream-tenant> \
   --client-id <gateway-upstream-app> --scope https://cognitiveservices.azure.com/.default \
   --key-file key.pem --cert-file cert.pem --bearer
-gateway-cli api create speech --upstream https://contextand-cs-foundry-us-east.cognitiveservices.azure.com \
+gateway-cli api create speech --upstream https://contextand-cs-foundry.cognitiveservices.azure.com \
   --credential foundry-speech
 gateway-cli op put speech transcribe POST /speechtotext/transcriptions:transcribe --meter audio --max-body-bytes 6291456
-gateway-cli bundle create speech --apis speech
+gateway-cli api create decision --upstream https://contextand-cs-foundry.services.ai.azure.com \
+  --credential foundry-speech
+gateway-cli op put decision systemone POST /providers/microsoft/v1/systemone --max-body-bytes 65536
+gateway-cli bundle create vandvaerk-ai --apis speech,decision
 gateway-cli principal create gjelvand-map --app-id <gjelvand-map-app> --rpm 30 --audio-seconds-per-day 3600
-gateway-cli sub create --bundle speech --principal gjelvand-map --keyless
+gateway-cli sub create --bundle vandvaerk-ai --principal gjelvand-map --keyless
 ```
 
-## 4. The caller's request
+## 4. The caller's requests
+
+The site sets `AI_GATEWAY_URL=http://ai-gateway:8080/apis/arvo` (owner `arvo`)
+and appends `/<api>/<upstream path>`:
 
 ```bash
-curl -X POST "http://ai-gateway:8080/apis/arvo/speech/speechtotext/transcriptions:transcribe?api-version=2025-10-15" \
+# speech — phraseList is TOP-LEVEL {phrases:[…]}, not inside enhancedMode
+curl -X POST "$AI_GATEWAY_URL/speech/speechtotext/transcriptions:transcribe?api-version=2025-10-15" \
   -H "Authorization: Bearer $ENTRA_V2_APP_TOKEN" \
   -F audio=@clip.wav \
-  -F 'definition={"locales":["da"],"enhancedMode":{"enabled":true,"model":"mai-transcribe-1.5","phraseList":["…"]}}'
+  -F 'definition={"locales":["da"],"phraseList":{"phrases":["…"]},"enhancedMode":{"enabled":true,"model":"mai-transcribe-2"}}'
+
+# decision
+curl -X POST "$AI_GATEWAY_URL/decision/providers/microsoft/v1/systemone" \
+  -H "Authorization: Bearer $ENTRA_V2_APP_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"model":"Decision-1","state":{…},"questions":[…]}'
 ```
+
+Only these two operations are declared. Any other path or verb under either
+API is a local 404 and is never forwarded.
+
+**Later: streaming transcription.** The Azure OpenAI v1 endpoint
+(`https://contextand-cs-foundry.openai.azure.com/openai/v1`, deployment
+`MAI-Transcribe-2-Streaming`) is out of scope. When it is needed, it becomes a
+third API on the same credential (same scope). If it streams over HTTP, the
+lane's `FlushInterval = -1` already streams responses. If it needs WebSocket, it
+belongs on the realtime-speech path, which is off by default.
 
 The gateway responds to failures as follows:
 
@@ -178,7 +219,7 @@ The gateway responds to failures as follows:
 | 429 | Limit reached; `Retry-After` gives the wait |
 
 Usage records (`GET $B/owners/arvo/usage`) attribute each call to `gjelvand-map`
-with `bytesIn` and `audioSeconds`. Bodies are never logged.
+with its API and operation, `bytesIn`, and (speech only) `audioSeconds`. Bodies are never logged.
 
 ## Rotation and backup
 

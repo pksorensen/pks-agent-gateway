@@ -253,6 +253,8 @@ leaves `/data/identity`). Principals can carry `limits` — requests/min and
 **audio seconds/day** estimated from `Content-Length` on operations with
 `"meter": "audio"` — and every operation has a body cap (default 6 MiB).
 Operation paths may contain `:` (`/speechtotext/transcriptions:transcribe`).
+Several APIs can share one credential (e.g. Foundry `speech` + `decision` under
+one cognitiveservices scope, one cached token).
 Runbook: [docs/deploy/arvo-coolify.md](docs/deploy/arvo-coolify.md).
 
 End-to-end check with real processes, a local echo upstream and a real

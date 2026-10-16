@@ -10,9 +10,16 @@
 ## Context
 
 The first production use of the subscription lane is a central AI gateway on
-the arvo Coolify box. Its first caller is one site (`gjelvand-map`), which needs
-Danish speech-to-text from Azure Foundry. The fast-transcription operation is
-`POST /speechtotext/transcriptions:transcribe`, with a colon in the path.
+the arvo Coolify box. Its first caller is one site (`gjelvand-map`, the
+vandvaerk site). It uses two APIs on one Azure Foundry resource in Sweden
+Central, both under the scope `https://cognitiveservices.azure.com/.default`:
+
+- **`speech`**: Danish fast transcription,
+  `POST /speechtotext/transcriptions:transcribe` on
+  `contextand-cs-foundry.cognitiveservices.azure.com`, with a colon in the path.
+- **`decision`**: Decision-1, `POST /providers/microsoft/v1/systemone` on
+  `contextand-cs-foundry.services.ai.azure.com`. It takes small JSON bodies
+  (capped at 64 KB) and is counted per request.
 
 The requirements:
 
