@@ -73,7 +73,9 @@ No inbound access is needed.
 ## 1. Gateway identity (once, on the box)
 
 ```bash
-docker exec ai-gateway /app/gateway identity init --dir /data/identity
+# Coolify suffixes container names, so find it by name, or run a one-off on the volume:
+docker exec "$(docker ps -qf name=ai-gateway)" /app/gateway identity init --dir /data/identity
+# docker run --rm -v <volume>:/data registry.agentics.dk/agentics/pks-agent-gateway:<version> identity init --dir /data/identity
 ```
 
 The command prints the thumbprint, `x5t` and a `keyCredentials` entry. Running it

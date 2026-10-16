@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -304,6 +305,8 @@ func bearerEntraToken(r *http.Request) (string, bool) {
 func (l *Lane) authorizeEntra(ctx context.Context, st *GatewayStore, raw string, covers func(*Bundle) bool) (*grant, *denial) {
 	appID, err := l.entra.Verify(ctx, raw)
 	if err != nil {
+		// The reason only (issuer, audience, expired, …) — never the token.
+		log.Printf("lane: owner=%s entra-jwt rejected: %v", st.owner, err)
 		return nil, &denial{http.StatusUnauthorized, "invalid access token"}
 	}
 	p, err := st.PrincipalByAppID(appID)

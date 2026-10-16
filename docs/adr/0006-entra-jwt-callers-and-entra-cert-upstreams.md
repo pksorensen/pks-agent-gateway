@@ -145,6 +145,8 @@ separate and unchanged.
 
   Both are checked after authorization and **before** a token is minted
   upstream. A rejected request is a 429 with `Retry-After` and is not charged.
+  An admitted request is charged even if the upstream then fails (for example a
+  502), which errs on the conservative side.
 - **Audio estimate.** `ceil(Content-Length / audioBytesPerSecond)`. The default is
   32000 B/s (16 kHz PCM16 mono WAV). The multipart envelope and the `definition`
   JSON over-count slightly, which is conservative. Compressed audio is
