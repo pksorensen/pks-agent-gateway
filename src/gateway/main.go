@@ -22,8 +22,14 @@ func main() {
 	owner := env("GATEWAY_OWNER", "default")
 	gatewayToken := os.Getenv("GATEWAY_TOKEN")
 	oidcIssuer := os.Getenv("OIDC_ISSUER")
-	simEnabled := os.Getenv("GATEWAY_SIM_ENABLED") == "1"
+	flags, err := runtimeFlagsFromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("gateway config: %v", err)
+	}
+	simEnabled := flags.sim
 	speech := speechConfigFromEnv()
+	speech.Enabled = flags.realtimeSpeech
+	log.Println(flags.summary())
 
 	store := NewStore(dataDir, owner)
 	sim := newSimulator(store, simEnabled)
@@ -88,8 +94,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid UPSTREAM %q: %v", upstream, err)
 	}
-	// gatewayKeyGuard: a gwk_ key never rides the passthrough lane.
-	mux.Handle("/", gatewayKeyGuard(sim.Gate(newProxy(upstreamURL, gatewayToken))))
+	// gatewayKeyGuard: a gwk_ key never rides the passthrough lane. With
+	// GATEWAY_PASSTHROUGH=off the catch-all answers locally; the sim gate
+	// stays in front so sim keys keep their local answer either way.
+	var catchAll http.Handler = newProxy(upstreamURL, gatewayToken)
+	if !flags.passthrough {
+		catchAll = passthroughDisabled()
+	}
+	mux.Handle("/", gatewayKeyGuard(sim.Gate(catchAll)))
 
 	srv := &http.Server{
 		Addr:    ":" + port,
@@ -100,7 +112,11 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	log.Printf("pks-agent-gateway listening on :%s → %s", port, upstream)
+	if flags.passthrough {
+		log.Printf("pks-agent-gateway listening on :%s → %s", port, upstream)
+	} else {
+		log.Printf("pks-agent-gateway listening on :%s (passthrough off)", port)
+	}
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -109,4 +125,69 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// runtimeFlags are the deployment kill switches (ADR 0006). Everything that
+// can reach a third party or open a socket is either explicit or off.
+type runtimeFlags struct {
+	prod           bool // GATEWAY_MODE=prod
+	passthrough    bool // GATEWAY_PASSTHROUGH (default on; "off" disables)
+	sim            bool // GATEWAY_SIM_ENABLED=1
+	realtimeSpeech bool // GATEWAY_REALTIME_SPEECH_ENABLED=1
+	oidc           bool
+}
+
+func runtimeFlagsFromEnv(getenv func(string) string) (runtimeFlags, error) {
+	f := runtimeFlags{
+		sim:            getenv("GATEWAY_SIM_ENABLED") == "1",
+		realtimeSpeech: getenv("GATEWAY_REALTIME_SPEECH_ENABLED") == "1",
+		oidc:           getenv("OIDC_ISSUER") != "",
+	}
+	switch getenv("GATEWAY_MODE") {
+	case "", "dev":
+	case "prod":
+		f.prod = true
+	default:
+		return f, fmt.Errorf("GATEWAY_MODE must be dev or prod")
+	}
+	switch getenv("GATEWAY_PASSTHROUGH") {
+	case "", "on":
+		f.passthrough = true
+	case "off":
+	default:
+		return f, fmt.Errorf("GATEWAY_PASSTHROUGH must be on or off")
+	}
+	// Without OIDC the management plane admits everyone as an admin.
+	if f.prod && !f.oidc {
+		return f, fmt.Errorf("GATEWAY_MODE=prod requires OIDC_ISSUER (the management API would be open)")
+	}
+	return f, nil
+}
+
+// summary is one startup line saying which lanes are live — the cheapest
+// check that a deployment exposes only what it should.
+func (f runtimeFlags) summary() string {
+	onoff := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	mode := "dev"
+	if f.prod {
+		mode = "prod"
+	}
+	auth := "OIDC"
+	if !f.oidc {
+		auth = "OPEN (dev)"
+	}
+	return fmt.Sprintf("gateway mode=%s management-auth=%s passthrough=%s sim=%s realtime-speech=%s",
+		mode, auth, onoff(f.passthrough), onoff(f.sim), onoff(f.realtimeSpeech))
+}
+
+// passthroughDisabled replaces the Anthropic passthrough when it is off.
+func passthroughDisabled() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonError(w, "not found", http.StatusNotFound)
+	})
 }

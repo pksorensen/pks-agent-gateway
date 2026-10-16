@@ -14,7 +14,7 @@ import (
 func TestSpeechCapabilitiesReflectRuntimeConfiguration(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
 	w := httptest.NewRecorder()
-	newSpeechCapabilitiesHandler(speechConfig{RuntimeURL: "http://runtime"}).ServeHTTP(w, r)
+	newSpeechCapabilitiesHandler(speechConfig{Enabled: true, RuntimeURL: "http://runtime"}).ServeHTTP(w, r)
 
 	var result struct {
 		Capabilities []struct {
@@ -50,6 +50,7 @@ func TestSpeechRealtimeBridgesTextAndBinary(t *testing.T) {
 	defer runtime.Close()
 
 	gateway := httptest.NewServer(newSpeechRealtimeHandler(speechConfig{
+		Enabled:      true,
 		RuntimeURL:   runtime.URL,
 		ClientToken:  "meeting-secret",
 		RuntimeToken: "runtime-secret",

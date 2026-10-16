@@ -104,6 +104,7 @@ func newGatewayAPI(root *GatewayRoot, creds *CredentialResolver, sealer *Sealer)
 	admin("GET", "/principals/{id}", a.getPrincipal)
 	admin("POST", "/principals/{id}/disable", a.setPrincipalDisabled(true))
 	admin("POST", "/principals/{id}/enable", a.setPrincipalDisabled(false))
+	admin("PUT", "/principals/{id}/limits", a.putPrincipalLimits)
 
 	admin("GET", "/subscriptions", a.listSubscriptions)
 	admin("POST", "/subscriptions", a.createSubscription)
@@ -329,6 +330,15 @@ func validateOperation(op *Operation) error {
 	}
 	if len(op.InputSchema) > 0 && !json.Valid(op.InputSchema) {
 		return fmt.Errorf("operation %s: inputSchema is not valid JSON", op.ID)
+	}
+	if op.MaxBodyBytes < -1 {
+		return fmt.Errorf("operation %s: maxBodyBytes must be -1 (no cap), 0 (default) or positive", op.ID)
+	}
+	if op.Meter != "" && op.Meter != meterAudio {
+		return fmt.Errorf("operation %s: meter must be empty or %q", op.ID, meterAudio)
+	}
+	if op.AudioBytesPerSecond < 0 {
+		return fmt.Errorf("operation %s: audioBytesPerSecond must be >= 0", op.ID)
 	}
 	return nil
 }
@@ -810,6 +820,10 @@ func (a *gatewayAPI) createPrincipal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := p.Limits.validate(); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	p.Disabled = false
 	p.CreatedAt = a.now().UTC()
 	if err := st.put(kindPrincipal, p.ID, &p); err != nil {
@@ -823,6 +837,34 @@ func (a *gatewayAPI) getPrincipal(w http.ResponseWriter, r *http.Request) {
 	st := ownerStore(r)
 	p, err := st.GetPrincipal(r.PathValue("id"))
 	if err != nil {
+		storeErr(w, "principal", err)
+		return
+	}
+	writeJSONStatus(w, http.StatusOK, p)
+}
+
+// putPrincipalLimits replaces the principal's limits ({} clears them).
+func (a *gatewayAPI) putPrincipalLimits(w http.ResponseWriter, r *http.Request) {
+	st := ownerStore(r)
+	p, err := st.GetPrincipal(r.PathValue("id"))
+	if err != nil {
+		storeErr(w, "principal", err)
+		return
+	}
+	var lim PrincipalLimits
+	if err := decodeBody(r, &lim); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := lim.validate(); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	p.Limits = &lim
+	if lim == (PrincipalLimits{}) {
+		p.Limits = nil
+	}
+	if err := st.put(kindPrincipal, p.ID, p); err != nil {
 		storeErr(w, "principal", err)
 		return
 	}
@@ -1310,10 +1352,12 @@ func (a *gatewayAPI) rotateCredential(w http.ResponseWriter, r *http.Request) {
 // --- Usage ---
 
 type usageTotals struct {
-	Calls     int   `json:"calls"`
-	Errors    int   `json:"errors"`
-	BytesOut  int64 `json:"bytesOut"`
-	LatencyMs int64 `json:"latencyMsTotal"`
+	Calls        int   `json:"calls"`
+	Errors       int   `json:"errors"`
+	BytesIn      int64 `json:"bytesIn"`
+	BytesOut     int64 `json:"bytesOut"`
+	AudioSeconds int64 `json:"audioSeconds"`
+	LatencyMs    int64 `json:"latencyMsTotal"`
 }
 
 func (a *gatewayAPI) usage(w http.ResponseWriter, r *http.Request) {
@@ -1345,7 +1389,9 @@ func (a *gatewayAPI) usage(w http.ResponseWriter, r *http.Request) {
 			if rec.Status >= 400 {
 				x.Errors++
 			}
+			x.BytesIn += rec.BytesIn
 			x.BytesOut += rec.BytesOut
+			x.AudioSeconds += rec.AudioSeconds
 			x.LatencyMs += rec.LatencyMs
 		}
 	}

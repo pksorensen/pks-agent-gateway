@@ -16,6 +16,9 @@ import (
 const realtimeSpeechCapability = "speech.realtime.transcribe"
 
 type speechConfig struct {
+	// Enabled is GATEWAY_REALTIME_SPEECH_ENABLED=1: the WebSocket bridge is
+	// off unless explicitly switched on, even with a runtime URL set.
+	Enabled      bool
 	RuntimeURL   string
 	ClientToken  string
 	RuntimeToken string
@@ -29,7 +32,7 @@ func speechConfigFromEnv() speechConfig {
 	}
 }
 
-func (c speechConfig) enabled() bool { return c.RuntimeURL != "" }
+func (c speechConfig) enabled() bool { return c.Enabled && c.RuntimeURL != "" }
 
 func newSpeechCapabilitiesHandler(config speechConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

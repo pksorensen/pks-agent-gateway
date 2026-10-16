@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,15 +30,20 @@ type Lane struct {
 	// MCP OAuth (optional). issuer empty = key-only.
 	oauthIssuer   string
 	oauthAudience string // extra accepted audience (Keycloak mapper value)
-
-	// entra is the entra-jwt caller verifier for /apis/ (ADR 0006); nil = off.
-	entra         *entraJWTVerifier
 	verify        TokenVerifier
 	publicBaseURL string // e.g. https://gw.example.com; empty = derive from request
+
+	// entra is the entra-jwt caller verifier for /apis/ (ADR 0006); nil = off.
+	entra *entraJWTVerifier
+	// limits enforces per-principal caps; defaultMaxBody applies to
+	// operations without maxBodyBytes (-1 there = no cap).
+	limits         *usageLimiter
+	defaultMaxBody int64
 }
 
 func NewLane(root *GatewayRoot, creds *CredentialResolver) *Lane {
-	return &Lane{root: root, hub: newConnectorHub(), creds: creds, now: time.Now}
+	return &Lane{root: root, hub: newConnectorHub(), creds: creds, now: time.Now,
+		limits: newUsageLimiter(), defaultMaxBody: defaultMaxBodyBytes}
 }
 
 // grant is the outcome of a successful authorization.
@@ -200,6 +207,38 @@ func (l *Lane) ServeAPI(w http.ResponseWriter, r *http.Request) {
 	rec := UsageRecord{Subscription: g.sub.ID, Principal: g.principal.ID, Bundle: g.bundle.ID,
 		Api: api.ID, Operation: op.ID, Method: r.Method}
 
+	// Body cap and metering are decided from Content-Length before anything
+	// is read, and before an upstream token is minted for a doomed request.
+	maxBody := op.MaxBodyBytes
+	if maxBody == 0 {
+		maxBody = l.defaultMaxBody
+	}
+	if maxBody > 0 && r.ContentLength > maxBody {
+		jsonError(w, fmt.Sprintf("request body exceeds %d bytes", maxBody), http.StatusRequestEntityTooLarge)
+		l.record(st, rec, http.StatusRequestEntityTooLarge, start, 0)
+		return
+	}
+	if op.Meter == meterAudio {
+		if r.ContentLength < 0 {
+			jsonError(w, "metered operation needs Content-Length", http.StatusLengthRequired)
+			l.record(st, rec, http.StatusLengthRequired, start, 0)
+			return
+		}
+		rec.AudioSeconds = estimateAudioSeconds(r.ContentLength, op.AudioBytesPerSecond)
+	}
+	if d, retryAfter := l.limits.admit(st, g.principal, l.now(), rec.AudioSeconds); d != nil {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		jsonError(w, d.msg, d.status)
+		rec.AudioSeconds = 0 // not charged
+		l.record(st, rec, d.status, start, 0)
+		return
+	}
+	if maxBody > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBody) // a lying chunked body still stops at the cap
+	}
+	body := &countingBody{ReadCloser: r.Body}
+	r.Body = body
+
 	cred, inject, err := l.credentialFor(r.Context(), st, api.Credential)
 	if err != nil {
 		log.Printf("lane: owner=%s api=%s op=%s: %v", st.owner, api.ID, op.ID, err)
@@ -239,12 +278,18 @@ func (l *Lane) ServeAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				jsonError(w, fmt.Sprintf("request body exceeds %d bytes", tooBig.Limit), http.StatusRequestEntityTooLarge)
+				return
+			}
 			// Never echo err: with query injection it contains the URL + secret.
 			log.Printf("lane: api=%s op=%s: upstream request failed", api.ID, op.ID)
 			jsonError(w, "upstream request failed", http.StatusBadGateway)
 		},
 	}
 	proxy.ServeHTTP(sw, r)
+	rec.BytesIn = body.n
 	l.record(st, rec, sw.status, start, sw.bytes)
 }
 

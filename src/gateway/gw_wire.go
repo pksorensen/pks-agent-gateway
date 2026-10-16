@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -28,6 +29,9 @@ type laneConfig struct {
 	verify        TokenVerifier // nil = derive from oauthIssuer via discovery
 	// entraJWT enables entra-jwt caller auth on /apis/ (ADR 0006); nil = off.
 	entraJWT *entraJWTConfig
+	// defaultMaxBody caps request bodies of operations without their own
+	// maxBodyBytes; 0 = 6 MiB.
+	defaultMaxBody int64
 }
 
 func laneConfigFromEnv(dataDir string) (laneConfig, error) {
@@ -46,14 +50,23 @@ func laneConfigFromEnv(dataDir string) (laneConfig, error) {
 			return laneConfig{}, err
 		}
 	}
+	var maxBody int64
+	if v := os.Getenv("GATEWAY_DEFAULT_MAX_BODY_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 1 {
+			return laneConfig{}, fmt.Errorf("GATEWAY_DEFAULT_MAX_BODY_BYTES must be a positive integer")
+		}
+		maxBody = n
+	}
 	return laneConfig{
-		entraJWT:      ej,
-		dataDir:       dataDir,
-		sealer:        sealer,
-		identityDir:   os.Getenv("GATEWAY_IDENTITY_DIR"),
-		oauthIssuer:   env("MCP_OAUTH_ISSUER", os.Getenv("OIDC_ISSUER")),
-		oauthAudience: os.Getenv("MCP_OAUTH_AUDIENCE"),
-		publicBaseURL: strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"), "/"),
+		defaultMaxBody: maxBody,
+		entraJWT:       ej,
+		dataDir:        dataDir,
+		sealer:         sealer,
+		identityDir:    os.Getenv("GATEWAY_IDENTITY_DIR"),
+		oauthIssuer:    env("MCP_OAUTH_ISSUER", os.Getenv("OIDC_ISSUER")),
+		oauthAudience:  os.Getenv("MCP_OAUTH_AUDIENCE"),
+		publicBaseURL:  strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"), "/"),
 	}, nil
 }
 
@@ -88,6 +101,9 @@ func mountSubscriptionLane(mux *http.ServeMux, auth *OIDCMiddleware, cfg laneCon
 	lane.oauthAudience = cfg.oauthAudience
 	lane.publicBaseURL = cfg.publicBaseURL
 	lane.verify = cfg.verify
+	if cfg.defaultMaxBody > 0 {
+		lane.defaultMaxBody = cfg.defaultMaxBody
+	}
 	if lane.oauthIssuer != "" && lane.verify == nil {
 		v, err := oidcTokenVerifier(context.Background(), lane.oauthIssuer)
 		if err != nil {

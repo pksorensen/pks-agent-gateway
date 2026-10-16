@@ -61,6 +61,13 @@ type Operation struct {
 	// BodyContentType of the upstream request body when called as a tool
 	// (default application/json).
 	BodyContentType string `json:"bodyContentType,omitempty"`
+	// MaxBodyBytes caps the request body (0 = gateway default, 6 MiB unless
+	// GATEWAY_DEFAULT_MAX_BODY_BYTES says otherwise; -1 = no cap).
+	MaxBodyBytes int64 `json:"maxBodyBytes,omitempty"`
+	// Meter "audio" charges ceil(Content-Length / AudioBytesPerSecond)
+	// against the principal's audioSecondsPerDay (default 32000 B/s).
+	Meter               string `json:"meter,omitempty"`
+	AudioBytesPerSecond int64  `json:"audioBytesPerSecond,omitempty"`
 }
 
 type McpSource string
@@ -119,11 +126,13 @@ type Principal struct {
 	Sub  string        `json:"sub,omitempty"` // OIDC subject (humans; optional for services)
 	// AppID is the Entra client id a service authenticates as with an
 	// entra-jwt access token (its azp claim). Unique per owner.
-	AppID     string    `json:"appId,omitempty"`
-	Email     string    `json:"email,omitempty"`
-	Name      string    `json:"name,omitempty"`
-	Disabled  bool      `json:"disabled,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	AppID    string `json:"appId,omitempty"`
+	Email    string `json:"email,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	// Limits are optional per-principal caps (ADR 0006).
+	Limits    *PrincipalLimits `json:"limits,omitempty"`
+	CreatedAt time.Time        `json:"createdAt"`
 }
 
 type SubState string
@@ -171,7 +180,10 @@ type UsageRecord struct {
 	Method       string    `json:"method,omitempty"`
 	Status       int       `json:"status"`
 	LatencyMs    int64     `json:"latencyMs"`
+	BytesIn      int64     `json:"bytesIn"`
 	BytesOut     int64     `json:"bytesOut"`
+	// AudioSeconds is the estimate charged at admission (metered ops only).
+	AudioSeconds int64 `json:"audioSeconds,omitempty"`
 }
 
 var errNotFound = errors.New("not found")
