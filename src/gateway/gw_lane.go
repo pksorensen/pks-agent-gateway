@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,8 @@ type Lane struct {
 	// operations without maxBodyBytes (-1 there = no cap).
 	limits         *usageLimiter
 	defaultMaxBody int64
+	// transport reaches http(s) upstreams; nil = http.DefaultTransport.
+	transport http.RoundTripper
 }
 
 func NewLane(root *GatewayRoot, creds *CredentialResolver) *Lane {
@@ -206,6 +209,10 @@ func (l *Lane) ServeAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	rec := UsageRecord{Subscription: g.sub.ID, Principal: g.principal.ID, Bundle: g.bundle.ID,
 		Api: api.ID, Operation: op.ID, Method: r.Method}
+	if op.WebSocket {
+		l.serveStream(w, r, st, g, api, op, rest, rec, start)
+		return
+	}
 
 	// Body cap and metering are decided from Content-Length before anything
 	// is read, and before an upstream token is minted for a doomed request.
@@ -259,21 +266,42 @@ func (l *Lane) ServeAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-	proxy := &httputil.ReverseProxy{
+	proxy := l.proxy(api, op, rest, r.URL.RawQuery, target, rt, cred, inject, rec)
+	proxy.ServeHTTP(sw, r)
+	rec.BytesIn = body.n
+	l.record(st, rec, sw.status, start, sw.bytes)
+}
+
+// proxy forwards one declared operation: the API's credential is injected,
+// presented credentials and cookies are stripped, the query is kept. A
+// protocol upgrade passes only for a WebSocket operation; ReverseProxy
+// handles the 101 and splices the two connections.
+func (l *Lane) proxy(api *Api, op *Operation, rest, rawQuery string, target *url.URL, rt http.RoundTripper, cred string, inject Injection, rec UsageRecord) *httputil.ReverseProxy {
+	runner := rt != nil
+	if rt == nil {
+		rt = l.transport // nil = http.DefaultTransport
+	}
+	return &httputil.ReverseProxy{
 		FlushInterval: -1, // streaming — same invariant as the passthrough proxy
 		Transport:     rt, // nil = default; a yamux stream for runner:// upstreams
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.URL.Path = joinURLPath(target.Path, rest)
 			pr.Out.URL.RawPath = ""
-			pr.Out.URL.RawQuery = r.URL.RawQuery
+			pr.Out.URL.RawQuery = rawQuery
 			pr.Out.Host = target.Host
 			stripPresentedCredentials(pr.Out.Header)
 			pr.Out.Header.Del("Cookie")
+			if !op.WebSocket {
+				// ReverseProxy re-adds these for any upgrade; only a declared
+				// WebSocket operation may switch protocols.
+				pr.Out.Header.Del("Upgrade")
+				pr.Out.Header.Del("Connection")
+			}
 			if cred != "" {
 				inject.apply(pr.Out, cred)
 			}
-			if rt != nil {
+			if runner {
 				pr.Out.Header.Set(gatewayContextHeader, gatewayContext(rec))
 			}
 		},
@@ -288,9 +316,6 @@ func (l *Lane) ServeAPI(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "upstream request failed", http.StatusBadGateway)
 		},
 	}
-	proxy.ServeHTTP(sw, r)
-	rec.BytesIn = body.n
-	l.record(st, rec, sw.status, start, sw.bytes)
 }
 
 func (l *Lane) credentialFor(ctx context.Context, st *GatewayStore, id string) (string, Injection, error) {

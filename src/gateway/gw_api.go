@@ -340,6 +340,12 @@ func validateOperation(op *Operation) error {
 	if op.AudioBytesPerSecond < 0 {
 		return fmt.Errorf("operation %s: audioBytesPerSecond must be >= 0", op.ID)
 	}
+	if op.WebSocket && op.Method != "GET" {
+		return fmt.Errorf("operation %s: a websocket operation must be GET", op.ID)
+	}
+	if op.MaxSessionSeconds < 0 || (op.MaxSessionSeconds > 0 && !op.WebSocket) {
+		return fmt.Errorf("operation %s: maxSessionSeconds needs websocket and must be >= 0", op.ID)
+	}
 	return nil
 }
 
@@ -578,7 +584,9 @@ func (a *gatewayAPI) createMcp(w http.ResponseWriter, r *http.Request) {
 		if len(in.Operations) == 1 && in.Operations[0] == "*" {
 			in.Operations = nil
 			for _, op := range api.Operations {
-				in.Operations = append(in.Operations, op.ID)
+				if !op.WebSocket {
+					in.Operations = append(in.Operations, op.ID)
+				}
 			}
 		}
 		for _, id := range in.Operations {

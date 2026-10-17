@@ -68,6 +68,11 @@ type Operation struct {
 	// against the principal's audioSecondsPerDay (default 32000 B/s).
 	Meter               string `json:"meter,omitempty"`
 	AudioBytesPerSecond int64  `json:"audioBytesPerSecond,omitempty"`
+	// WebSocket marks a GET operation that is a WebSocket upgrade (ADR 0007).
+	// Meter "audio" then charges the session's wall-clock seconds, and
+	// MaxSessionSeconds (0 = 300) bounds the session.
+	WebSocket         bool  `json:"websocket,omitempty"`
+	MaxSessionSeconds int64 `json:"maxSessionSeconds,omitempty"`
 }
 
 type McpSource string
@@ -182,8 +187,11 @@ type UsageRecord struct {
 	LatencyMs    int64     `json:"latencyMs"`
 	BytesIn      int64     `json:"bytesIn"`
 	BytesOut     int64     `json:"bytesOut"`
-	// AudioSeconds is the estimate charged at admission (metered ops only).
+	// AudioSeconds is the estimate charged at admission (metered ops only);
+	// for a WebSocket operation, the session's wall-clock seconds.
 	AudioSeconds int64 `json:"audioSeconds,omitempty"`
+	// DurationMs is how long an upgraded WebSocket session stayed open.
+	DurationMs int64 `json:"durationMs,omitempty"`
 }
 
 var errNotFound = errors.New("not found")

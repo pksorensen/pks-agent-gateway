@@ -207,9 +207,11 @@ func (l *Lane) apiTools(st *GatewayStore, srv *McpServer) ([]toolDef, error) {
 	return out, nil
 }
 
+// findOperation finds an operation usable as an MCP tool; a WebSocket
+// operation never is.
 func findOperation(api *Api, id string) *Operation {
 	for i := range api.Operations {
-		if api.Operations[i].ID == id {
+		if api.Operations[i].ID == id && !api.Operations[i].WebSocket {
 			return &api.Operations[i]
 		}
 	}

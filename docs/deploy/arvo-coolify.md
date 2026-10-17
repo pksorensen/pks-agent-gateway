@@ -203,15 +203,63 @@ curl -X POST "$AI_GATEWAY_URL/decision/providers/microsoft/v1/systemone" \
   -d '{"model":"Decision-1","state":{…},"questions":[…]}'
 ```
 
-Only these two operations are declared. Any other path or verb under either
+Only the declared operations are forwarded. Any other path or verb under an
 API is a local 404 and is never forwarded.
 
-**Later: streaming transcription.** The Azure OpenAI v1 endpoint
-(`https://contextand-cs-foundry.openai.azure.com/openai/v1`, deployment
-`MAI-Transcribe-2-Streaming`) is out of scope. When it is needed, it becomes a
-third API on the same credential (same scope). If it streams over HTTP, the
-lane's `FlushInterval = -1` already streams responses. If it needs WebSocket, it
-belongs on the realtime-speech path, which is off by default.
+## 5. Live transcription: `speech-stream` (WebSocket, ADR 0007)
+
+`MAI-Transcribe-2-Streaming` is a WebSocket at
+`wss://contextand-cs-foundry.services.ai.azure.com/mai/v1/realtime?intent=transcription`.
+It takes the same Entra scope, so it uses the **same credential** as `speech`
+and `decision`. Use the credential id the live `speech` API uses: check it with
+`gateway-cli api get speech`; this runbook calls it `foundry-speech`.
+
+```bash
+curl "${H[@]}" -X POST $B/owners/$O/apis -d '{
+  "id": "speech-stream", "name": "MAI-Transcribe-2-Streaming (Foundry, Sweden Central)",
+  "upstream": "https://contextand-cs-foundry.services.ai.azure.com",
+  "credential": "foundry-speech",
+  "operations": [{"id": "realtime", "method": "GET", "path": "/mai/v1/realtime",
+    "websocket": true, "meter": "audio", "maxSessionSeconds": 300}]}'
+curl "${H[@]}" -X PUT $B/owners/$O/bundles/vandvaerk-ai/apis/speech-stream
+# optional: concurrent sessions (default 2). PUT replaces all limits.
+curl "${H[@]}" -X PUT $B/owners/$O/principals/gjelvand-map/limits \
+  -d '{"requestsPerMinute":30,"audioSecondsPerDay":3600,"maxStreams":2}'
+```
+
+With the CLI:
+
+```bash
+gateway-cli api create speech-stream --upstream https://contextand-cs-foundry.services.ai.azure.com \
+  --credential foundry-speech
+gateway-cli op put speech-stream realtime GET /mai/v1/realtime --websocket --meter audio --max-session-seconds 300
+gateway-cli bundle add vandvaerk-ai api speech-stream
+gateway-cli principal limits gjelvand-map --rpm 30 --audio-seconds-per-day 3600 --max-streams 2
+```
+
+The caller opens
+`ws://ai-gateway:8080/apis/arvo/speech-stream/mai/v1/realtime?intent=transcription`
+with `Authorization: Bearer <entra v2 app token>`, then speaks the upstream
+protocol unchanged:
+
+- `session.update`;
+- `input_audio_buffer.append` with base64 PCM16;
+- `input_audio_buffer.commit`;
+- receives `….transcription.delta` / `.completed`.
+
+Behaviour at the gateway:
+
+- **Refusals happen before any upstream token or dial.** Either a 401 or 403
+  as for the other APIs, or a 429 when rpm, `maxStreams` or today's audio
+  quota is used up.
+- **The session is cut** at `maxSessionSeconds`, or sooner when today's audio
+  quota runs out. The caller sees a 1006 close. Commit and close before the
+  bound.
+- **Charging:** when a session ends it is charged its wall-clock seconds
+  (rounded up) against `audioSecondsPerDay`. The usage record has status 101,
+  `durationMs`, `bytesIn`/`bytesOut` and `audioSeconds`. Frames are never
+  logged.
+- **A plain GET** to the operation gets 426.
 
 The gateway responds to failures as follows:
 
@@ -220,10 +268,13 @@ The gateway responds to failures as follows:
 | 401 | Bad or expired token |
 | 403 | Unknown `appId`, or no subscription covers the API |
 | 413 | Body over the cap |
-| 429 | Limit reached; `Retry-After` gives the wait |
+| 426 | Plain request to a WebSocket operation |
+| 429 | Limit reached (rpm, audio quota, concurrent streams); `Retry-After` gives the wait |
 
 Usage records (`GET $B/owners/arvo/usage`) attribute each call to `gjelvand-map`
-with its API and operation, `bytesIn`, and (speech only) `audioSeconds`. Bodies are never logged.
+with its API and operation, `bytesIn`, and (speech and speech-stream only)
+`audioSeconds`; streams also carry `durationMs` and `bytesOut`. Bodies and
+frames are never logged.
 
 ## Rotation and backup
 

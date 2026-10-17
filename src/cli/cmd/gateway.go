@@ -195,10 +195,13 @@ func opCommands() *cobra.Command {
 	maxBody := put.Flags().Int64("max-body-bytes", 0, "request body cap (0 = gateway default 6 MiB, -1 = none)")
 	meter := put.Flags().String("meter", "", `"audio" charges Content-Length / audio-bytes-per-second against audio quotas`)
 	bps := put.Flags().Int64("audio-bytes-per-second", 0, "audio estimate rate (0 = 32000, 16 kHz PCM16 mono)")
+	ws := put.Flags().Bool("websocket", false, `GET only: the operation is a WebSocket upgrade; --meter audio then charges session seconds`)
+	maxSession := put.Flags().Int64("max-session-seconds", 0, "websocket session cap (0 = 300)")
 	put.RunE = run("PUT", func(a []string) string { return "/api/v1/apis/" + esc(a[0]) + "/operations/" + esc(a[1]) },
 		func(_ *cobra.Command, a []string) (any, error) {
 			body := map[string]any{"method": strings.ToUpper(a[2]), "path": a[3], "summary": *summary,
-				"maxBodyBytes": *maxBody, "meter": *meter, "audioBytesPerSecond": *bps}
+				"maxBodyBytes": *maxBody, "meter": *meter, "audioBytesPerSecond": *bps,
+				"websocket": *ws, "maxSessionSeconds": *maxSession}
 			if *schema != "" {
 				b, err := os.ReadFile(*schema)
 				if err != nil {
@@ -301,14 +304,15 @@ func principalCommands() *cobra.Command {
 	appID := create.Flags().String("app-id", "", "Entra client id this service authenticates as (entra-jwt azp); implies --kind service")
 	rpm := create.Flags().Int("rpm", 0, "limit: requests per minute (0 = none)")
 	audio := create.Flags().Int64("audio-seconds-per-day", 0, "limit: estimated audio seconds per UTC day (0 = none)")
+	streams := create.Flags().Int("max-streams", 0, "limit: concurrent websocket sessions (0 = default 2, -1 = none)")
 	create.RunE = run("POST", fixed("/api/v1/principals"), func(c *cobra.Command, a []string) (any, error) {
 		k := *kind
 		if *appID != "" && !c.Flags().Changed("kind") {
 			k = "service"
 		}
 		body := map[string]any{"id": a[0], "sub": *sub, "email": *email, "name": *name, "kind": k, "appId": *appID}
-		if *rpm != 0 || *audio != 0 {
-			body["limits"] = map[string]any{"requestsPerMinute": *rpm, "audioSecondsPerDay": *audio}
+		if *rpm != 0 || *audio != 0 || *streams != 0 {
+			body["limits"] = map[string]any{"requestsPerMinute": *rpm, "audioSecondsPerDay": *audio, "maxStreams": *streams}
 		}
 		return body, nil
 	})
@@ -318,8 +322,9 @@ func principalCommands() *cobra.Command {
 	limits := leaf("limits <id>", "Replace a principal's limits (no flags = clear)", 1, nil)
 	lRPM := limits.Flags().Int("rpm", 0, "requests per minute (0 = none)")
 	lAudio := limits.Flags().Int64("audio-seconds-per-day", 0, "estimated audio seconds per UTC day (0 = none)")
+	lStreams := limits.Flags().Int("max-streams", 0, "concurrent websocket sessions (0 = default 2, -1 = none)")
 	limits.RunE = run("PUT", p("limits"), func(*cobra.Command, []string) (any, error) {
-		return map[string]any{"requestsPerMinute": *lRPM, "audioSecondsPerDay": *lAudio}, nil
+		return map[string]any{"requestsPerMinute": *lRPM, "audioSecondsPerDay": *lAudio, "maxStreams": *lStreams}, nil
 	})
 	return group("principal", "Manage principals (who can hold subscriptions)",
 		leaf("list", "List principals", 0, run("GET", fixed("/api/v1/principals"), nil)),

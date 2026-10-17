@@ -187,7 +187,7 @@ credential (`env`, `sealed`, `entra`, `entra-cert`; `vault` next) — or serves 
 **runner connector** so the credential never reaches the gateway at all.
 CLI/agent-first: everything is `/api/v1` + `gateway-cli`; the agentics.dk
 console is a client of the same API. Design: `docs/prd/0001-api-gateway.md`,
-`docs/adr/0001`–`0006`.
+`docs/adr/0001`–`0007`.
 
 **Multi-tenant (ADR 0005).** Everything lives under an **owner**, claimed once
 (`gateway-cli owner claim acme`; the claimer's OIDC `sub` is the first admin,
@@ -255,6 +255,11 @@ leaves `/data/identity`). Principals can carry `limits` — requests/min and
 Operation paths may contain `:` (`/speechtotext/transcriptions:transcribe`).
 Several APIs can share one credential (e.g. Foundry `speech` + `decision` under
 one cognitiveservices scope, one cached token).
+An operation can be `"websocket": true` (GET; ADR 0007). The upgrade is proxied
+with the same credential injection. It is admitted against rpm,
+`limits.maxStreams` (default 2) and the remaining audio quota, cut at
+`maxSessionSeconds` (default 300), and with `"meter": "audio"` charged its
+wall-clock seconds.
 Runbook: [docs/deploy/arvo-coolify.md](docs/deploy/arvo-coolify.md).
 
 End-to-end check with real processes, a local echo upstream and a real

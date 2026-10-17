@@ -6,6 +6,7 @@
   source, the certificate path that ADR deferred), [ADR 0003](0003-bundle-and-subscription.md)
   (keyless subscriptions, principal limits)
 - Deploy runbook: [docs/deploy/arvo-coolify.md](../deploy/arvo-coolify.md)
+- Extended by: [ADR 0007](0007-websocket-operations.md) (WebSocket operations, stream limits)
 
 ## Context
 

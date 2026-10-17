@@ -85,6 +85,13 @@ through). See README.
   reader); never buffer them, never log them.
 - **Streaming.** `proxy.FlushInterval = -1` is required for SSE token streaming;
   do not remove it.
+- **WebSocket operations (ADR 0007, `gw_stream.go`).** Only an operation with
+  `websocket: true` may upgrade. `Rewrite` drops `Upgrade`/`Connection` for
+  every other operation. The splice is the stdlib ReverseProxy's: never parse
+  or log frames. Admission (`admitStream`: rpm, maxStreams, quota left) happens
+  before `credentialFor`. The session bound is a context deadline, and
+  ReverseProxy closes both connections when it fires. `release` must run on
+  every path after admission, or the principal leaks a stream slot.
 - **Open-proxy guard.** Optional `GATEWAY_TOKEN` → require `X-Gateway-Token`
   header. Wire it via Claude Code's `ANTHROPIC_CUSTOM_HEADERS`.
 
