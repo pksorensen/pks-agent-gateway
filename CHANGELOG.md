@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/pksorensen/pks-agent-gateway/compare/pks-agent-gateway-v1.3.0...pks-agent-gateway-v1.4.0) (2026-10-17)
+
+
+### Features
+
+* **gateway:** WebSocket operations on the subscription lane ([d4b0250](https://github.com/pksorensen/pks-agent-gateway/commit/d4b02505051520159dbbbc0f432bfe8445118588))
+
 ## [1.3.0](https://github.com/pksorensen/pks-agent-gateway/compare/pks-agent-gateway-v1.2.0...pks-agent-gateway-v1.3.0) (2026-10-16)
 
 
